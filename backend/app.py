@@ -1,32 +1,47 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_sqlalchemy import SQLAlchemy
-from flask_cors import CORS
+from flask_cors import CORS, cross_origin
 from datetime import datetime, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
 from sqlalchemy.ext.mutable import MutableList
 from sqlalchemy.orm.attributes import flag_modified
-import jwt, uuid, json, traceback, logging
+import jwt, uuid, json, traceback, logging, os
+from pdf_generator import QuotationPDFGenerator
+import threading
+import time
 
-# Import agent routes
 from agent_routes import agent_bp
 
 app = Flask(__name__)
+
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///quotations.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = 'dev-secret-key'
-
-# Enable debugging and logging
 app.config['DEBUG'] = True
 app.config['SQLALCHEMY_ECHO'] = False
 
-# Set up logging
 logging.basicConfig(level=logging.DEBUG)
 app.logger.setLevel(logging.DEBUG)
 
 db = SQLAlchemy(app)
-CORS(app, origins=['http://localhost:3000'])
 
-# Register the agent blueprint
+CORS(app,
+     origins=['http://localhost:3000'],
+     methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+     allow_headers=['Content-Type', 'Authorization'],
+     expose_headers=['Content-Disposition'],
+     supports_credentials=True)
+
+@app.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
+        response = jsonify()
+        response.headers.add("Access-Control-Allow-Origin", "http://localhost:3000")
+        response.headers.add('Access-Control-Allow-Headers', "Content-Type,Authorization")
+        response.headers.add('Access-Control-Allow-Methods', "GET,PUT,POST,DELETE,OPTIONS")
+        response.headers.add('Access-Control-Allow-Credentials', "true")
+        return response
+
 app.register_blueprint(agent_bp)
 
 def load_pricing_data():
@@ -37,6 +52,19 @@ def load_pricing_data():
         return {}
 
 PRICING_DATA = load_pricing_data()
+
+def cleanup_temp_pdf(filepath, delay=300):
+    def delete_file():
+        time.sleep(delay)
+        try:
+            if os.path.exists(filepath):
+                os.remove(filepath)
+                app.logger.debug(f"Cleaned up temp PDF: {filepath}")
+        except Exception as e:
+            app.logger.error(f"Failed to cleanup temp PDF {filepath}: {str(e)}")
+    cleanup_thread = threading.Thread(target=delete_file)
+    cleanup_thread.daemon = True
+    cleanup_thread.start()
 
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -65,13 +93,12 @@ class Quotation(db.Model):
     validity = db.Column(db.String(20), default='7 days')
     payment_schedule = db.Column(db.String(10), default='50%')
     rera_number = db.Column(db.String(50))
-    
-    # Use MutableList for JSON fields that store arrays
+
     headers = db.Column(MutableList.as_mutable(db.JSON))
     pricing_breakdown = db.Column(MutableList.as_mutable(db.JSON))
     applicable_terms = db.Column(MutableList.as_mutable(db.JSON))
     custom_terms = db.Column(MutableList.as_mutable(db.JSON))
-    
+
     total_amount = db.Column(db.Float, default=0.0)
     discount_amount = db.Column(db.Float, default=0.0)
     discount_percent = db.Column(db.Float, default=0.0)
@@ -90,7 +117,6 @@ class Quotation(db.Model):
             else (self.discount_amount / (self.total_amount + self.discount_amount) * 100
                   if self.total_amount and self.discount_amount else 0)
         )
-
         return {
             'id': self.id,
             'developerType': self.developer_type,
@@ -120,9 +146,7 @@ class Quotation(db.Model):
             'approvedAt': self.approved_at.isoformat() if self.approved_at else None
         }
 
-# Helper functions for approval logic
 def requires_approval_due_to_packages(headers):
-    """Check if any Package option is selected with sub-services"""
     if not headers:
         return False
     for header_data in headers:
@@ -134,7 +158,6 @@ def requires_approval_due_to_packages(headers):
     return False
 
 def requires_approval_due_to_customized_header(headers):
-    """Check if Customized Header option is selected with sub-services"""
     if not headers:
         return False
     for header_data in headers:
@@ -145,9 +168,7 @@ def requires_approval_due_to_customized_header(headers):
                 return True
     return False
 
-# Role-based access control decorator
 def role_required(*roles):
-    """Decorator to check if user has required role"""
     from functools import wraps
     def wrapper(f):
         @wraps(f)
@@ -157,7 +178,6 @@ def role_required(*roles):
                 token = request.headers["Authorization"].split(" ")[1]
             if not token:
                 return jsonify({"error": "Token missing"}), 401
-            
             try:
                 data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=["HS256"])
                 current_user = User.query.get(data["user_id"])
@@ -165,12 +185,9 @@ def role_required(*roles):
                     return jsonify({"error": "Insufficient permissions"}), 403
             except Exception as e:
                 return jsonify({"error": "Token invalid"}), 401
-            
             return f(current_user, *args, **kwargs)
         return decorated
     return wrapper
-
-# -------------------- AUTH HELPERS --------------------
 
 def generate_token(user):
     payload = {
@@ -200,7 +217,6 @@ def token_required(f):
         return f(current_user, *args, **kwargs)
     return wraps(f)(decorator)
 
-# Global error handler
 @app.errorhandler(500)
 def internal_error(error):
     app.logger.error('Server Error: %s', error)
@@ -208,46 +224,32 @@ def internal_error(error):
     db.session.rollback()
     return jsonify({'error': 'Internal server error', 'message': str(error)}), 500
 
-# -------------------- AUTH ROUTES --------------------
-
-# Updated signup route with role-based restrictions
 @app.route("/api/signup", methods=["POST"])
-@role_required("admin", "manager")  # Only admin and manager can create users
-def signup(current_user):  # current_user is passed by the decorator
+@role_required("admin", "manager")
+def signup(current_user):
     try:
         data = request.get_json()
         if not data.get("username") or not data.get("password"):
             return jsonify({"error": "Username and password required"}), 400
-
         if User.query.filter_by(username=data["username"]).first():
             return jsonify({"error": "Username already exists"}), 400
-
         new_role = data.get("role", "user")
         new_threshold = float(data.get("threshold", 0))
-
-        # Role-based restrictions for managers
         if current_user.role == "manager":
-            # Managers can only create 'user' role, not 'admin' or 'manager'
             if new_role in ["admin", "manager"]:
                 return jsonify({"error": "Managers cannot create admin or manager users"}), 403
-            
-            # Managers can only assign threshold up to their own limit
             if new_threshold > current_user.threshold:
                 return jsonify({"error": f"Threshold cannot exceed your limit of {current_user.threshold}%"}), 403
-        
-        # Admin can create any role with any threshold (no restrictions)
-
         user = User(
             fname=data.get("fname"),
             lname=data.get("lname"),
             username=data["username"],
             role=new_role,
-            threshold=new_threshold  # Now properly assigned
+            threshold=new_threshold
         )
         user.set_password(data["password"])
         db.session.add(user)
         db.session.commit()
-
         return jsonify({
             "message": "User created successfully",
             "user": {
@@ -256,7 +258,6 @@ def signup(current_user):  # current_user is passed by the decorator
                 "threshold": user.threshold
             }
         }), 201
-
     except Exception as e:
         db.session.rollback()
         app.logger.error(f"Signup error: {str(e)}")
@@ -269,11 +270,9 @@ def login():
         user = User.query.filter_by(username=data.get("username")).first()
         if not user or not user.check_password(data.get("password")):
             return jsonify({"error": "Invalid credentials"}), 401
-
         token = generate_token(user)
         if isinstance(token, bytes):
             token = token.decode("utf-8")
-
         return jsonify({
             "token": token,
             "role": user.role,
@@ -297,8 +296,6 @@ def get_profile(current_user):
         "role": current_user.role,
         "threshold": current_user.threshold
     })
-
-# -------------------- QUOTATIONS --------------------
 
 @app.route('/api/quotations', methods=['GET'])
 def get_quotations():
@@ -331,17 +328,50 @@ def create_quotation():
             service_summary=data.get('serviceSummary'),
             created_by=data.get('createdBy', data['developerName']),
             terms_accepted=bool(data.get('termsAccepted', False)),
-            applicable_terms=data.get('applicableTerms', [])
+            applicable_terms=data.get('applicableTerms', []),
+            headers=data.get('headers', [])   # ✅ FIX: store headers with subServices
         )
-
         db.session.add(quotation)
         db.session.commit()
-
         return jsonify({'success': True, 'data': quotation.to_dict()}), 201
     except Exception as e:
         db.session.rollback()
         app.logger.error(f"Create quotation error: {str(e)}")
         return jsonify({'error': 'Failed to create quotation'}), 500
+
+@app.route('/api/quotations/<quotation_id>/download-pdf', methods=['GET'])
+@cross_origin(origins='http://localhost:3000')
+def download_quotation_pdf(quotation_id):
+    try:
+        q = Quotation.query.filter_by(id=quotation_id).first()
+        if not q:
+            return jsonify({'error': 'Quotation not found'}), 404
+        pdf_generator = QuotationPDFGenerator()
+        filename = f"Quotation_{quotation_id}.pdf"
+        pdf_dir = 'temp_pdfs'
+        filepath = os.path.join(pdf_dir, filename)
+        os.makedirs(pdf_dir, exist_ok=True)
+        app.logger.debug(f"Generating PDF at: {filepath}")
+        pdf_generator.generate_pdf(q.to_dict(), filepath)
+        app.logger.debug(f"PDF generated successfully at: {filepath}")
+        cleanup_temp_pdf(filepath, delay=300)
+        response = send_file(
+            filepath,
+            as_attachment=True,
+            download_name=filename,
+            mimetype='application/pdf'
+        )
+        response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+        response.headers['Content-Type'] = 'application/pdf'
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+        app.logger.debug(f"PDF sent successfully: {filename}")
+        return response
+    except Exception as e:
+        app.logger.error(f"PDF generation error: {str(e)}")
+        app.logger.error(f"Traceback: {traceback.format_exc()}")
+        return jsonify({'error': f'Failed to generate PDF: {str(e)}'}), 500
 
 @app.route('/api/quotations/<quotation_id>', methods=['PUT'])
 @token_required
@@ -350,80 +380,54 @@ def update_quotation(current_user, quotation_id):
         app.logger.debug(f"Updating quotation {quotation_id}")
         q = Quotation.query.filter_by(id=quotation_id).first()
         if not q:
-            app.logger.error(f"Quotation {quotation_id} not found")
             return jsonify({'error': 'Not found'}), 404
-
         data = request.get_json()
-        app.logger.debug(f"Update data: {data}")
-
-        # Handle JSON field updates with proper type checking and modification flagging
         if 'headers' in data:
-            app.logger.debug("Updating headers field")
             headers_data = data['headers']
             if isinstance(headers_data, list):
                 q.headers = headers_data
                 flag_modified(q, 'headers')
-                app.logger.debug(f"Headers updated: {len(headers_data)} items")
             else:
-                app.logger.warning(f"Headers data is not a list: {type(headers_data)}")
                 q.headers = []
                 flag_modified(q, 'headers')
-
         if 'serviceSummary' in data:
             q.service_summary = data['serviceSummary']
-            app.logger.debug("Updated service summary")
-
         if 'status' in data:
             q.status = data['status']
-            app.logger.debug(f"Updated status to: {data['status']}")
-
         if 'termsAccepted' in data:
             q.terms_accepted = data['termsAccepted']
-            app.logger.debug(f"Updated terms accepted: {data['termsAccepted']}")
-
         if 'applicableTerms' in data:
             terms_data = data['applicableTerms']
             if isinstance(terms_data, list):
                 q.applicable_terms = terms_data
                 flag_modified(q, 'applicable_terms')
-                app.logger.debug(f"Updated applicable terms: {len(terms_data)} items")
             else:
                 q.applicable_terms = []
                 flag_modified(q, 'applicable_terms')
-
-        # Check approval requirements
         has_package_approval = requires_approval_due_to_packages(q.headers or [])
         has_customized_header_approval = requires_approval_due_to_customized_header(q.headers or [])
-
-        # Calculate effective discount
         effective_discount = (
             q.discount_percent if q.discount_percent > 0
             else (q.discount_amount / (q.total_amount + q.discount_amount) * 100
                   if q.total_amount and q.discount_amount else 0)
         )
-
-        # Combined approval logic
-        if (has_package_approval or
+        needs_approval = (
+            has_package_approval or
             has_customized_header_approval or
-            effective_discount > current_user.threshold or
-            (q.custom_terms and len(q.custom_terms) > 0)):
+            (q.custom_terms and len(q.custom_terms) > 0) or
+            effective_discount > current_user.threshold
+        )
+        if needs_approval:
             q.requires_approval = True
             q.status = 'pending_approval'
-            app.logger.debug("Quotation requires approval")
+            q.approved_by = None
+            q.approved_at = None
         else:
             q.requires_approval = False
             q.status = 'draft'
-            app.logger.debug("Quotation set to draft status")
-
-        app.logger.debug("Committing changes to database")
         db.session.commit()
-        app.logger.debug("Database commit successful")
-
         return jsonify({'success': True, 'data': q.to_dict()})
-
     except Exception as e:
-        app.logger.error(f"Error updating quotation {quotation_id}: {str(e)}")
-        app.logger.error(f"Traceback: {traceback.format_exc()}")
         db.session.rollback()
         return jsonify({'error': f'Failed to update quotation: {str(e)}'}), 500
 
@@ -433,10 +437,8 @@ def get_quotation(quotation_id):
         q = Quotation.query.filter_by(id=quotation_id).first()
         if not q:
             return jsonify({'error': 'Not found'}), 404
-
         return jsonify({'success': True, 'data': q.to_dict()})
     except Exception as e:
-        app.logger.error(f"Get quotation error: {str(e)}")
         return jsonify({'error': 'Failed to fetch quotation'}), 500
 
 @app.route('/api/quotations/calculate-pricing', methods=['POST'])
@@ -447,7 +449,6 @@ def calculate_pricing():
         region = data['projectRegion']
         plot_area = float(data['plotArea'])
         headers = data.get('headers', [])
-
         if plot_area <= 500:
             band = "0-500"
         elif plot_area <= 2000:
@@ -471,7 +472,7 @@ def calculate_pricing():
                     base = 50000
 
                 subs = [
-                    {"name": s.get('text', s.get('name', str(s))), "included": True}
+                    {"name": s.get('name', s.get('text', str(s))), "included": True}
                     for s in service.get('subServices', [])
                 ]
 
@@ -521,6 +522,10 @@ def update_pricing(current_user, quotation_id):
             q.pricing_breakdown = data['pricingBreakdown'] if isinstance(data['pricingBreakdown'], list) else []
             flag_modified(q, 'pricing_breakdown')
 
+        if 'headers' in data:   # ✅ FIX: ensure headers (with subServices) are updated
+            q.headers = data['headers'] if isinstance(data['headers'], list) else []
+            flag_modified(q, 'headers')
+
         if 'totalAmount' in data:
             q.total_amount = float(data['totalAmount'])
 
@@ -530,7 +535,6 @@ def update_pricing(current_user, quotation_id):
         if 'discountPercent' in data:
             q.discount_percent = float(data['discountPercent'])
 
-        # Calculate effective discount
         if q.discount_percent > 0:
             effective_discount = q.discount_percent
         elif q.total_amount and q.discount_amount:
@@ -538,17 +542,21 @@ def update_pricing(current_user, quotation_id):
         else:
             effective_discount = 0
 
-        # Check approval requirements including packages and customized headers
         has_package_approval = requires_approval_due_to_packages(q.headers or [])
         has_customized_header_approval = requires_approval_due_to_customized_header(q.headers or [])
 
-        # Combined approval logic
-        if (has_package_approval or
+        needs_approval = (
+            has_package_approval or
             has_customized_header_approval or
-            effective_discount > current_user.threshold or
-            (q.custom_terms and len(q.custom_terms) > 0)):
+            (q.custom_terms and len(q.custom_terms) > 0) or
+            effective_discount > current_user.threshold
+        )
+
+        if needs_approval:
             q.requires_approval = True
             q.status = "pending_approval"
+            q.approved_by = None
+            q.approved_at = None
         else:
             q.requires_approval = False
             q.status = "completed"
@@ -576,37 +584,36 @@ def update_terms(current_user, quotation_id):
         applicable_terms = data.get('applicableTerms', [])
         custom_terms = data.get('customTerms', [])
 
-        # Filter out empty custom terms
         valid_custom_terms = [term.strip() for term in custom_terms if term.strip()]
 
-        # Update terms data
         q.terms_accepted = terms_accepted
         q.applicable_terms = applicable_terms if isinstance(applicable_terms, list) else []
         q.custom_terms = valid_custom_terms
 
-        # Mark JSON fields as modified
         flag_modified(q, 'applicable_terms')
         flag_modified(q, 'custom_terms')
 
-        # Calculate effective discount
         effective_discount = (
             q.discount_percent if q.discount_percent > 0
             else (q.discount_amount / (q.total_amount + q.discount_amount) * 100
                   if q.total_amount and q.discount_amount else 0)
         )
 
-        # Check approval requirements
         has_package_approval = requires_approval_due_to_packages(q.headers or [])
         has_customized_header_approval = requires_approval_due_to_customized_header(q.headers or [])
 
-        # Combined approval logic
-        if (has_package_approval or
+        needs_approval = (
+            has_package_approval or
             has_customized_header_approval or
-            valid_custom_terms or
-            effective_discount > current_user.threshold):
-            if q.status not in ['approved', 'completed']:
-                q.requires_approval = True
-                q.status = 'pending_approval'
+            len(valid_custom_terms) > 0 or
+            effective_discount > current_user.threshold
+        )
+
+        if needs_approval:
+            q.requires_approval = True
+            q.status = 'pending_approval'
+            q.approved_by = None
+            q.approved_at = None
         else:
             q.requires_approval = False
             q.status = 'completed'
@@ -632,13 +639,11 @@ def approve(current_user, quotation_id):
         if not q:
             return jsonify({"error": "Not found"}), 404
 
-        # Calculate effective discount
         effective_discount = q.discount_percent if q.discount_percent > 0 else (
             (q.discount_amount / (q.total_amount + q.discount_amount)) * 100
             if q.total_amount and q.discount_amount else 0
         )
 
-        # Manager cannot approve beyond their threshold
         if current_user.role == "manager" and effective_discount > current_user.threshold:
             return jsonify({"error": f"Approval requires admin (limit {current_user.threshold}%)"}), 403
 
@@ -675,10 +680,9 @@ def pending(current_user):
         app.logger.error(f"Error fetching pending quotations: {str(e)}")
         return jsonify({"error": "Failed to fetch pending quotations"}), 500
 
-# -------------------- INIT --------------------
-
 with app.app_context():
     db.create_all()
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=3001)
+
