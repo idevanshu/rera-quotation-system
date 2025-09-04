@@ -1,11 +1,14 @@
-// src/components/QuotationBuilder.jsx
 import React, { useState, useEffect } from "react";
-import {
-  getAvailableHeaders,
-  getServicesForHeader,
-  expandPackageServices,
-  isPackageHeader,
-  getAllServices as getAllServicesData
+import { 
+  getAvailableHeaders, 
+  getServicesForHeader, 
+  expandPackageServices, 
+  isPackageHeader, 
+  getAllServices as getAllServicesData,
+  SERVICES,
+  YEAR_OPTIONS,
+  QUARTER_OPTIONS,
+  getAllQuartersForYears
 } from "../lib/servicesData";
 
 export default function QuotationBuilder({ onComplete }) {
@@ -19,706 +22,737 @@ export default function QuotationBuilder({ onComplete }) {
   const [selectedYears, setSelectedYears] = useState({});
   const [selectedQuarters, setSelectedQuarters] = useState({});
 
-  // Reusable Service Card
-  const ServiceCard = ({ service }) => (
-    <div
-      key={service.name}
-      style={{
-        padding: "0.75rem",
-        border: "1px solid #ddd",
-        borderRadius: "0.5rem",
-      }}
-    >
-      <label style={{ fontWeight: 500, color: service.isDisabled ? '#999' : 'inherit' }}>
-        <input
-          type="checkbox"
-          checked={service.isChecked || service.isDisabled}
-          onChange={(e) =>
-            onServiceToggle(service.name, e.target.checked, service)
-          }
-          style={{ marginRight: "0.5rem" }}
-          disabled={service.isDisabled}
-        />
-        {service.name}{" "}
-        {service.isDisabled && (
-          <span style={{ color: "#6b7280" }}>
-            (Already selected)
-          </span>
-        )}
-      </label>
-
-      {/* Year Dropdown */}
-      {service.hasYear && service.isChecked && (
-        <div style={{ marginTop: "0.5rem" }}>
-          <label htmlFor={`year-select-${service.name}`}>Year: </label>
-          <select
-            id={`year-select-${service.name}`}
-            value={selectedYears[service.name] || new Date().getFullYear()}
-            onChange={(e) =>
-              setSelectedYears(prev => ({ ...prev, [service.name]: e.target.value }))
-            }
-            style={{ marginLeft: '0.5rem' }}
-          >
-            {getYears().map((year) => (
-              <option key={year} value={year}>
-                {year}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
-
-      {/* Quarter Dropdown */}
-      {service.hasQuarter && service.isChecked && (
-        <div style={{ marginTop: "0.5rem" }}>
-          <label htmlFor={`quarter-select-${service.name}`}>Quarter: </label>
-          <select
-            id={`quarter-select-${service.name}`}
-            value={selectedQuarters[service.name] || getQuarter()}
-            onChange={(e) =>
-              setSelectedQuarters(prev => ({ ...prev, [service.name]: e.target.value }))
-            }
-            style={{ marginLeft: '0.5rem' }}
-          >
-            <option value="Jan-Mar">Jan - Mar</option>
-            <option value="Apr-Jun">Apr - Jun</option>
-            <option value="Jul-Sep">Jul - Sep</option>
-            <option value="Oct-Dec">Oct - Dec</option>
-          </select>
-        </div>
-      )}
-
-      {service.isChecked && service.subServices.length > 0 && (
-        <div style={{ marginTop: "0.5rem", paddingLeft: "1rem" }}>
-          <h5 style={{ marginBottom: "0.25rem" }}>Sub-services:</h5>
-          {service.subServices.map((sub) => (
-            <label
-              key={sub.name}
-              style={{
-                display: "block",
-                fontSize: "0.9rem",
-                marginBottom: "0.25rem",
-                color: sub.isDisabled ? '#999' : 'inherit'
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={sub.isChecked || sub.isDisabled}
-                onChange={(e) =>
-                  onSubServiceToggle(service.name, sub.name, e.target.checked, service)
-                }
-                style={{ marginRight: "0.5rem" }}
-                disabled={sub.isDisabled}
-              />
-              {sub.name}
-            </label>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-
-  // Function to get all services (main and add-ons)
-  const getAllServices = () => {
-    return getAllServicesData();
+  // Helper function to find service in servicesData by ID
+  const findServiceInServicesData = (serviceId) => {
+    for (const headerName in SERVICES) {
+      const services = SERVICES[headerName] || [];
+      for (const service of services) {
+        if (service.id === serviceId) {
+          return service;
+        }
+      }
+    }
+    return null;
   };
 
-  // Function to generate years from 2017 to the current year
-  const getYears = () => {
-    const currentYear = new Date().getFullYear();
-    const years = [];
-    for (let year = 2017; year <= currentYear; year++) {
-      years.push(year);
+  // Helper function to find service by name
+  const findServiceByName = (serviceName) => {
+    for (const headerName in SERVICES) {
+      const services = SERVICES[headerName] || [];
+      for (const service of services) {
+        if (service.name === serviceName) {
+          return service;
+        }
+      }
     }
-    return years;
+    return null;
   };
 
-  // Function to get the current quarter
-  const getQuarter = () => {
-    const month = new Date().getMonth() + 1;
-    if (month >= 1 && month <= 3) {
-      return "Jan-Mar";
-    } else if (month >= 4 && month <= 6) {
-      return "Apr-Jun";
-    } else if (month >= 7 && month <= 9) {
-      return "Jul-Sep";
-    } else {
-      return "Oct-Dec";
+  // Update summary whenever selected services change
+  useEffect(() => {
+    const newSummary = {};
+    let totalServices = 0;
+
+    selectedHeaders.forEach(headerName => {
+      const headerServices = selectedServices[headerName] || [];
+      newSummary[headerName] = headerServices.length;
+      totalServices += headerServices.length;
+    });
+
+    setSummary({ ...newSummary, total: totalServices });
+    setAllSelectedServices(Object.values(selectedServices).flat());
+  }, [selectedServices, selectedHeaders]);
+
+  // Handle header selection
+  const handleHeaderSelect = (headerName) => {
+    if (!selectedHeaders.includes(headerName)) {
+      setSelectedHeaders([...selectedHeaders, headerName]);
+      setSelectedServices(prev => ({ ...prev, [headerName]: [] }));
     }
+    setCurrentHeader(headerName);
   };
 
-  // Add a header
-  const addHeader = (header) => {
-    if (header === "Customized Header") {
-      setIsCustomizing(true);
-      setCustomHeaderName("");
-      setSelectedServices({});
-      return;
-    }
-
-    if (selectedHeaders.includes(header)) {
-      const headerServicesFromSummary = summary[header];
-      const addOnServicesFromSummary = summary["Add ons"];
-      if (headerServicesFromSummary || addOnServicesFromSummary) {
-        const initialState = {};
-        const initialYears = {};
-        const initialQuarters = {};
+  // Handle service selection/deselection
+  const handleServiceToggle = (serviceId, selected) => {
+    setSelectedServices(prev => {
+      const updated = { ...prev };
+      const headerServices = updated[currentHeader] || [];
+      
+      if (selected) {
+        // Find the actual service data from servicesData.js
+        const actualService = findServiceInServicesData(serviceId);
         
-        // Load main services
-        if (headerServicesFromSummary) {
-          headerServicesFromSummary.forEach(service => {
-            initialState[service.name] = {
-              checked: service.isChecked,
-              subServices: service.subServices.reduce((acc, sub) => {
-                acc[sub.name] = sub.isChecked;
-                return acc;
-              }, {})
-            };
-            if (service.hasYear) {
-              initialYears[service.name] = service.selectedYear;
-            }
-            if (service.hasQuarter) {
-              initialQuarters[service.name] = service.selectedQuarter;
-            }
-          });
-        }
-        // Load add-on services
-        if (addOnServicesFromSummary) {
-          addOnServicesFromSummary.forEach(service => {
-            initialState[service.name] = {
-              checked: service.isChecked,
-              subServices: service.subServices.reduce((acc, sub) => {
-                acc[sub.name] = sub.isChecked;
-                return acc;
-              }, {})
-            };
-            if (service.hasYear) {
-              initialYears[service.name] = service.selectedYear;
-            }
-            if (service.hasQuarter) {
-              initialQuarters[service.name] = service.selectedQuarter;
-            }
-          });
-        }
-        setSelectedServices(initialState);
-        setSelectedYears(initialYears);
-        setSelectedQuarters(initialQuarters);
-      }
-    } else {
-      setSelectedHeaders([...selectedHeaders, header]);
-      setSelectedServices({});
-      setSelectedYears({});
-      setSelectedQuarters({});
-    }
-
-    if (isPackageHeader(header)) {
-      const packageServices = expandPackageServices(header);
-      setSelectedServices((prev) => {
-        const newState = { ...prev };
-        packageServices.forEach((service) => {
-          const subServices = {};
-          if (service.subServices) {
-            service.subServices.forEach((sub) => {
-              subServices[sub.name || sub] = true;
-            });
-          }
-          newState[service.name] = {
-            checked: true,
-            subServices,
+        if (actualService) {
+          // Create service object with proper subServices structure
+          const serviceWithSubServices = {
+            id: actualService.id,
+            name: actualService.name,
+            label: actualService.name,
+            // Map subServices properly with actual names and IDs
+            subServices: actualService.subServices ? actualService.subServices.map(sub => ({
+              id: sub.id,
+              name: sub.name,
+              included: true
+            })) : []
           };
-        });
-        return newState;
-      });
-    }
-    setCurrentHeader(header);
-  };
-
-  const saveCustomHeaderName = () => {
-    if (customHeaderName.trim() === "") {
-      alert("Please enter a name for the custom header.");
-      return;
-    }
-    if (selectedHeaders.includes(customHeaderName)) {
-      alert("A header with this name already exists. Please choose a different name.");
-      return;
-    }
-    setSelectedHeaders([...selectedHeaders, customHeaderName]);
-    setCurrentHeader(customHeaderName);
-    setIsCustomizing(false);
-  };
-
-  // Toggle parent service (auto-select/unselect all sub-services)
-  const onServiceToggle = (serviceName, isChecked, serviceData = {}) => {
-    setSelectedServices((prev) => {
-      const subServices = {};
-      if (serviceData.subServices) {
-        serviceData.subServices.forEach((sub) => {
-          subServices[sub.name || sub] = isChecked;
-        });
-      }
-      return {
-        ...prev,
-        [serviceName]: {
-          ...(prev[serviceName] || { subServices: {} }),
-          checked: isChecked,
-          subServices: {
-            ...(prev[serviceName]?.subServices || {}),
-            ...subServices,
-          },
-        },
-      };
-    });
-
-    if (serviceData.hasYear && !isChecked) {
-      setSelectedYears((prev) => {
-        const newState = { ...prev };
-        delete newState[serviceName];
-        return newState;
-      });
-    }
-
-    if (serviceData.hasQuarter && !isChecked) {
-      setSelectedQuarters((prev) => {
-        const newState = { ...prev };
-        delete newState[serviceName];
-        return newState;
-      });
-    }
-  };
-
-  // Toggle sub-service
-  const onSubServiceToggle = (
-    parentName,
-    subServiceName,
-    isChecked,
-    parentData = {}
-  ) => {
-    setSelectedServices((prev) => {
-      const updatedSubServices = {
-        ...(prev[parentName]?.subServices || {}),
-        [subServiceName]: isChecked,
-      };
-      const subServiceList =
-        parentData.subServices || Object.keys(updatedSubServices);
-      const allUnchecked = subServiceList.every(
-        (sub) => !updatedSubServices[sub.name || sub]
-      );
-      return {
-        ...prev,
-        [parentName]: {
-          ...(prev[parentName] || {}),
-          checked: !allUnchecked,
-          subServices: updatedSubServices,
-        },
-      };
-    });
-  };
-
-  // Save current header selection into summary
-  const saveCurrentHeader = () => {
-    if (!currentHeader) return;
-    
-    // Get all services for the current header, including add-ons
-    const servicesForHeader = getServicesForHeader(currentHeader).map(
-      (service) => {
-        const selected = selectedServices[service.name] || {
-          checked: false,
-          subServices: {},
-        };
-        const selectedYear = service.hasYear && selected.checked ? selectedYears[service.name] || new Date().getFullYear() : undefined;
-        const selectedQuarter = service.hasQuarter && selected.checked ? selectedQuarters[service.name] || getQuarter() : undefined;
-        return {
-          ...service,
-          isChecked: selected.checked,
-          selectedYear: selectedYear,
-          selectedQuarter: selectedQuarter,
-          subServices: service.subServices
-            ? service.subServices.map((sub) => ({
-                name: sub.name || sub,
-                isChecked: selected.subServices[sub.name || sub] || false,
-              }))
-            : [],
-        };
-      }
-    );
-
-    // Filter services into main and add-ons based on category
-    const mainServices = servicesForHeader.filter(service => service.category === 'main');
-    const addOnServices = servicesForHeader.filter(service => service.category === 'addon');
-
-    // Update the list of all selected services, including add-ons
-    const newlySelectedServices = servicesForHeader
-      .filter(s => s.isChecked)
-      .map(s => s.name);
-
-    const oldServices = summary[currentHeader]?.filter(s => s.isChecked).map(s => s.name) || [];
-    const updatedServicesSet = new Set(allSelectedServices);
-    oldServices.forEach(service => updatedServicesSet.delete(service));
-    newlySelectedServices.forEach(service => updatedServicesSet.add(service));
-    setAllSelectedServices(Array.from(updatedServicesSet));
-
-    setSummary((prev) => {
-      const newSummary = { ...prev };
-      
-      // Update the main services for the current header
-      newSummary[currentHeader] = mainServices;
-
-      // Handle Add-ons: They are a single, shared list. We need to merge them.
-      let existingAddOns = newSummary["Add ons"] || [];
-      
-      // Merge selected add-ons from the current header with the existing ones
-      const updatedAddOns = addOnServices.map(newAddOn => {
-          const existing = existingAddOns.find(e => e.name === newAddOn.name);
-          return existing ? { ...existing, ...newAddOn } : newAddOn;
-      });
-
-      // Filter out add-ons that were deselected from the global list.
-      const finalAddOns = existingAddOns.filter(existing => updatedAddOns.some(u => u.name === existing.name));
-      updatedAddOns.forEach(u => {
-          if (!finalAddOns.some(f => f.name === u.name)) {
-              finalAddOns.push(u);
+          
+          // Only add if not already present
+          if (!headerServices.some(s => s.id === serviceId)) {
+            updated[currentHeader] = [...headerServices, serviceWithSubServices];
           }
-      });
+          
+          console.log('Added service with proper subServices:', serviceWithSubServices);
+        }
+      } else {
+        // Remove service
+        updated[currentHeader] = headerServices.filter(s => s.id !== serviceId);
+      }
       
-      newSummary["Add ons"] = finalAddOns;
-
-      return newSummary;
+      return updated;
     });
-    
-    // Update the service and year selections after summary is saved
-    const newSelectedServices = {};
-    const newSelectedYears = {};
-    const newSelectedQuarters = {};
-    
-    Object.values(summary).flat().forEach(service => {
-        if (service.isChecked) {
-            newSelectedServices[service.name] = {
-                checked: true,
-                subServices: service.subServices.reduce((acc, sub) => {
-                    if (sub.isChecked) {
-                        acc[sub.name] = true;
-                    }
-                    return acc;
-                }, {})
-            };
-            if (service.hasYear && service.selectedYear) {
-                newSelectedYears[service.name] = service.selectedYear;
-            }
-            if (service.hasQuarter && service.selectedQuarter) {
-                newSelectedQuarters[service.name] = service.selectedQuarter;
-            }
-        }
-    });
-
-    servicesForHeader.forEach(service => {
-        if (service.isChecked) {
-            newSelectedServices[service.name] = {
-                checked: true,
-                subServices: service.subServices.reduce((acc, sub) => {
-                    if (sub.isChecked) {
-                        acc[sub.name] = true;
-                    }
-                    return acc;
-                }, {})
-            };
-            if (service.hasYear && service.selectedYear) {
-                newSelectedYears[service.name] = service.selectedYear;
-            }
-            if (service.hasQuarter && service.selectedQuarter) {
-                newSelectedQuarters[service.name] = service.selectedQuarter;
-            }
-        }
-    });
-    
-    setSelectedServices(newSelectedServices);
-    setSelectedYears(newSelectedYears);
-    setSelectedQuarters(newSelectedQuarters);
-
-    setCurrentHeader(null);
   };
 
-  // Edit a header from summary
-  const editHeader = (header) => {
-    setCurrentHeader(header);
-    const headerServicesFromSummary = summary[header] || [];
-    const addOnServicesFromSummary = summary["Add ons"] || [];
-    const allServicesToEdit = [...headerServicesFromSummary, ...addOnServicesFromSummary];
-
-    const initialState = {};
-    const initialYears = {};
-    const initialQuarters = {};
-
-    allServicesToEdit.forEach(service => {
-        initialState[service.name] = {
-          checked: service.isChecked,
-          subServices: service.subServices.reduce((acc, sub) => {
-            if (sub.isChecked) {
-              acc[sub.name] = true;
-            }
-            return acc;
-          }, {})
-        };
-        if (service.hasYear && service.selectedYear) {
-          initialYears[service.name] = service.selectedYear;
-        }
-        if (service.hasQuarter && service.selectedQuarter) {
-          initialQuarters[service.name] = service.selectedQuarter;
-        }
+  // Handle subservice toggle
+  const handleSubServiceToggle = (serviceId, subServiceId, included) => {
+    setSelectedServices(prev => {
+      const updated = { ...prev };
+      const headerServices = updated[currentHeader] || [];
+      const serviceIndex = headerServices.findIndex(s => s.id === serviceId);
+      
+      if (serviceIndex >= 0) {
+        const service = { ...headerServices[serviceIndex] };
+        service.subServices = service.subServices.map(sub => 
+          sub.id === subServiceId ? { ...sub, included } : sub
+        );
+        headerServices[serviceIndex] = service;
+        updated[currentHeader] = headerServices;
+      }
+      
+      return updated;
     });
-    setSelectedServices(initialState);
-    setSelectedYears(initialYears);
-    setSelectedQuarters(initialQuarters);
   };
 
-  // Build services for UI
-  const servicesForUI = currentHeader === "Customized Header" 
-    ? getAllServices()
-    : getServicesForHeader(currentHeader);
+  // Handle year/quarter selection for forms
+  const handleYearChange = (serviceId, years) => {
+    setSelectedYears(prev => ({ ...prev, [serviceId]: years }));
+    
+    // Auto-select all quarters for selected years
+    const allQuarters = getAllQuartersForYears(years);
+    setSelectedQuarters(prev => ({ ...prev, [serviceId]: allQuarters }));
+  };
 
-  const mainServicesForUI = servicesForUI.filter(s => s.category === 'main').map((service) => {
-      const selected = selectedServices[service.name] || { checked: false, subServices: {} };
-      const isDisabled = allSelectedServices.includes(service.name) && !selected.checked;
+  const handleQuarterChange = (serviceId, quarters) => {
+    setSelectedQuarters(prev => ({ ...prev, [serviceId]: quarters }));
+  };
+
+  // Remove header
+  const handleRemoveHeader = (headerName) => {
+    setSelectedHeaders(selectedHeaders.filter(h => h !== headerName));
+    setSelectedServices(prev => {
+      const updated = { ...prev };
+      delete updated[headerName];
+      return updated;
+    });
+    
+    if (currentHeader === headerName) {
+      setCurrentHeader(selectedHeaders[0] || null);
+    }
+  };
+
+  // Handle custom header
+  const handleAddCustomHeader = () => {
+    if (customHeaderName.trim()) {
+      const headerName = customHeaderName.trim();
+      handleHeaderSelect(headerName);
+      setCustomHeaderName("");
+      setIsCustomizing(false);
+    }
+  };
+
+  // Complete quotation
+  const handleComplete = () => {
+    const formattedHeaders = selectedHeaders.map(headerName => {
+      const services = selectedServices[headerName] || [];
+      
       return {
-        ...service,
-        isChecked: selected.checked,
-        isDisabled: isDisabled,
-        subServices: service.subServices
-          ? service.subServices.map((sub) => ({
-              name: sub.name || sub,
-              isChecked: selected.subServices[sub.name || sub] || false,
-              isDisabled: isDisabled,
-            }))
-          : [],
+        header: headerName,
+        name: headerName,
+        services: services.map(service => ({
+          id: service.id,
+          name: service.name,
+          label: service.name,
+          subServices: service.subServices || []
+        }))
       };
     });
 
-  const addOnServicesForUI = servicesForUI.filter(s => s.category === 'addon').map((service) => {
-      const selected = selectedServices[service.name] || { checked: false, subServices: {} };
-      const isDisabled = allSelectedServices.includes(service.name) && !selected.checked;
-      return {
-        ...service,
-        isChecked: selected.checked,
-        isDisabled: isDisabled,
-        subServices: service.subServices
-          ? service.subServices.map((sub) => ({
-              name: sub.name || sub,
-              isChecked: selected.subServices[sub.name || sub] || false,
-              isDisabled: isDisabled,
-            }))
-          : [],
-      };
-  });
+    console.log('Completing quotation with properly formatted headers:', formattedHeaders);
+    
+    if (onComplete) {
+      onComplete(formattedHeaders);
+    }
+  };
+
+  // Get available services for current header
+  const getServicesForCurrentHeader = () => {
+    if (!currentHeader) return [];
+    return getServicesForHeader(currentHeader);
+  };
+
+  // Check if service is selected
+  const isServiceSelected = (serviceId) => {
+    const headerServices = selectedServices[currentHeader] || [];
+    return headerServices.some(s => s.id === serviceId);
+  };
+
+  // Service Card Component
+  const ServiceCard = ({ service }) => {
+    const isSelected = isServiceSelected(service.id);
+    const selectedService = selectedServices[currentHeader]?.find(s => s.id === service.id);
+    const requiresYearQuarter = service.requiresYearQuarter;
+
+    return (
+      <div className={`service-card ${isSelected ? 'selected' : ''}`}>
+        <div className="service-header">
+          <label className="service-checkbox">
+            <input
+              type="checkbox"
+              checked={isSelected}
+              onChange={(e) => handleServiceToggle(service.id, e.target.checked)}
+            />
+            <span className="service-name">{service.name}</span>
+          </label>
+          {service.category === 'addon' && (
+            <span className="addon-badge">Add-on</span>
+          )}
+        </div>
+
+        {isSelected && (
+          <div className="service-details">
+            {/* Year/Quarter Selection for Forms */}
+            {requiresYearQuarter && (
+              <div className="year-quarter-selection">
+                <div className="form-field">
+                  <label>Select Years:</label>
+                  <select
+                    multiple
+                    value={selectedYears[service.id] || []}
+                    onChange={(e) => {
+                      const years = Array.from(e.target.selectedOptions, option => option.value);
+                      handleYearChange(service.id, years);
+                    }}
+                    className="year-select"
+                  >
+                    {YEAR_OPTIONS.map(year => (
+                      <option key={year.value} value={year.value}>
+                        {year.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {selectedYears[service.id]?.length > 0 && (
+                  <div className="form-field">
+                    <label>Select Quarters:</label>
+                    <select
+                      multiple
+                      value={selectedQuarters[service.id] || []}
+                      onChange={(e) => {
+                        const quarters = Array.from(e.target.selectedOptions, option => option.value);
+                        handleQuarterChange(service.id, quarters);
+                      }}
+                      className="quarter-select"
+                    >
+                      {selectedYears[service.id]?.map(year => 
+                        QUARTER_OPTIONS[year]?.map(quarter => (
+                          <option key={quarter.value} value={quarter.value}>
+                            {quarter.label}
+                          </option>
+                        ))
+                      ).flat()}
+                    </select>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Sub-services */}
+            {selectedService && selectedService.subServices?.length > 0 && (
+              <div className="sub-services">
+                <h4>Sub-services:</h4>
+                <div className="sub-services-list">
+                  {selectedService.subServices.map((subService, index) => (
+                    <label key={subService.id || index} className="sub-service-item">
+                      <input
+                        type="checkbox"
+                        checked={subService.included !== false}
+                        onChange={(e) => handleSubServiceToggle(
+                          service.id, 
+                          subService.id, 
+                          e.target.checked
+                        )}
+                      />
+                      <span>{subService.name}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
-    <div style={{ padding: "2rem" }}>
-      <h2>Quotation Builder</h2>
+    <div className="quotation-builder">
+      <div className="builder-container">
+        {/* Header Section */}
+        <div className="builder-header">
+          <h2>Build Your Quotation</h2>
+          <div className="progress-summary">
+            <span>Headers: {selectedHeaders.length}</span>
+            <span>Total Services: {summary.total || 0}</span>
+          </div>
+        </div>
 
-      {/* Header selection */}
-      {!currentHeader && !isCustomizing && (
-        <div style={{ marginBottom: "2rem" }}>
-          <h3>Select Header:</h3>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
-              gap: "1rem",
-              marginTop: "1rem",
-            }}
-          >
-            {getAvailableHeaders(selectedHeaders).map((header) => (
-              <div
+        {/* Headers Selection */}
+        <div className="headers-section">
+          <h3>Select Service Categories</h3>
+          <div className="headers-grid">
+            {getAvailableHeaders(selectedHeaders).map(header => (
+              <button
                 key={header}
-                onClick={() => addHeader(header)}
-                style={{
-                  padding: "1rem",
-                  border: "1px solid #ccc",
-                  borderRadius: "0.75rem",
-                  cursor: "pointer",
-                  background: currentHeader === header ? "#eef6ff" : "transparent",
-                }}
+                onClick={() => handleHeaderSelect(header)}
+                className="header-button"
               >
-                <strong>{header}</strong>
-              </div>
+                {header}
+              </button>
             ))}
-          </div>
-        </div>
-      )}
-
-      {/* Custom Header Input */}
-      {isCustomizing && (
-        <div style={{ marginBottom: "2rem" }}>
-          <h3>Name Your Custom Header:</h3>
-          <input
-            type="text"
-            value={customHeaderName}
-            onChange={(e) => setCustomHeaderName(e.target.value)}
-            placeholder="Enter header name..."
-            style={{
-              width: "100%",
-              padding: "0.75rem",
-              fontSize: "1rem",
-              border: "1px solid #ccc",
-              borderRadius: "0.5rem",
-              marginBottom: "1rem",
-            }}
-          />
-          <button
-            onClick={saveCustomHeaderName}
-            style={{
-              padding: "0.75rem 1.5rem",
-              border: "none",
-              borderRadius: "0.5rem",
-              background: "#10b981",
-              color: "#fff",
-              cursor: "pointer",
-            }}
-          >
-            Save & Continue
-          </button>
-        </div>
-      )}
-
-      {/* Services */}
-      {currentHeader && (
-        <div style={{ marginTop: "2rem" }}>
-          <h3>{currentHeader}</h3>
-          <div style={{ marginTop: "1rem" }}>
-            {/* Main Services */}
-            <h4 style={{ marginTop: "1.5rem" }}>Main Services</h4>
-            <div style={{ display: "grid", gap: "1rem" }}>
-              {mainServicesForUI.map((service) => (
-                <ServiceCard key={service.name} service={service} />
-              ))}
-            </div>
-             {/* Add-on Services */}
-            <h4 style={{ marginTop: "1.5rem" }}>Add-on Services</h4>
-            <div style={{ display: "grid", gap: "1rem" }}>
-              {addOnServicesForUI.map((service) => (
-                <ServiceCard key={service.name} service={service} />
-              ))}
-            </div>
-          </div>
-          <div
-            style={{
-              marginTop: "2rem",
-              display: "flex",
-              justifyContent: "space-between",
-            }}
-          >
-            <button
-              onClick={() => {
-                setCurrentHeader(null);
-                setSelectedServices({});
-              }}
-              style={{
-                padding: "0.75rem 1.5rem",
-                border: "1px solid #ccc",
-                borderRadius: "0.5rem",
-                background: "#f9f9f9",
-                cursor: "pointer",
-              }}
-            >
-              ← Back
-            </button>
-            <button
-              onClick={saveCurrentHeader}
-              style={{
-                padding: "0.75rem 1.5rem",
-                border: "none",
-                borderRadius: "0.5rem",
-                background: "#10b981",
-                color: "#fff",
-                cursor: "pointer",
-                marginRight: "1rem",
-              }}
-            >
-              Save & Add Another Header
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Summary Box */}
-      {Object.keys(summary).length > 0 && (
-        <div
-          style={{
-            marginTop: "2rem",
-            padding: "1.5rem",
-            border: "1px solid #ddd",
-            borderRadius: "0.75rem",
-            background: "#f9fafb",
-          }}
-        >
-          <h3>Summary</h3>
-          {Object.entries(summary).map(([header, services]) => (
-            <div key={header} style={{ marginBottom: "1rem" }}>
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <strong>{header}</strong>
-                <button
-                  onClick={() => editHeader(header)}
-                  style={{
-                    border: "none",
-                    background: "transparent",
-                    color: "#2563eb",
-                    cursor: "pointer",
+            
+            {!isCustomizing ? (
+              <button
+                onClick={() => setIsCustomizing(true)}
+                className="header-button custom-button"
+              >
+                + Custom Header
+              </button>
+            ) : (
+              <div className="custom-header-form">
+                <input
+                  type="text"
+                  value={customHeaderName}
+                  onChange={(e) => setCustomHeaderName(e.target.value)}
+                  placeholder="Enter custom header name"
+                  className="custom-header-input"
+                />
+                <button onClick={handleAddCustomHeader} className="add-button">
+                  Add
+                </button>
+                <button 
+                  onClick={() => {
+                    setIsCustomizing(false);
+                    setCustomHeaderName("");
                   }}
+                  className="cancel-button"
                 >
-                  Edit
+                  Cancel
                 </button>
               </div>
-              <ul style={{ marginTop: "0.5rem", paddingLeft: "1.25rem" }}>
-                {services
-                  .filter((s) => s.isChecked)
-                  .map((s) => (
-                    <li key={s.name} style={{ marginBottom: "0.25rem" }}>
-                      {s.name} {s.hasYear && s.selectedYear && `(${s.selectedYear})`}
-                      {s.hasQuarter && s.selectedQuarter && ` (${s.selectedQuarter})`}
-                      {s.subServices?.some((sub) => sub.isChecked) && (
-                        <ul style={{ paddingLeft: "1.25rem", marginTop: "0.25rem" }}>
-                          {s.subServices
-                            .filter((sub) => sub.isChecked)
-                            .map((sub) => (
-                              <li
-                                key={sub.name}
-                                style={{ fontSize: "0.9rem", color: "#4b5563" }}
-                              >
-                                {sub.name}
-                              </li>
-                            ))}
-                        </ul>
+            )}
+          </div>
+        </div>
+
+        {/* Selected Headers */}
+        {selectedHeaders.length > 0 && (
+          <div className="selected-headers">
+            <h3>Selected Categories</h3>
+            <div className="headers-list">
+              {selectedHeaders.map(header => (
+                <div
+                  key={header}
+                  className={`header-tab ${currentHeader === header ? 'active' : ''}`}
+                >
+                  <button
+                    onClick={() => setCurrentHeader(header)}
+                    className="header-tab-button"
+                  >
+                    {header}
+                    <span className="service-count">
+                      ({selectedServices[header]?.length || 0})
+                    </span>
+                  </button>
+                  <button
+                    onClick={() => handleRemoveHeader(header)}
+                    className="remove-header-button"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Services Selection */}
+        {currentHeader && (
+          <div className="services-section">
+            <h3>Services for {currentHeader}</h3>
+            <div className="services-grid">
+              {getServicesForCurrentHeader().map(service => (
+                <ServiceCard key={service.id} service={service} />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Summary */}
+        {allSelectedServices.length > 0 && (
+          <div className="selection-summary">
+            <h3>Selection Summary</h3>
+            {selectedHeaders.map(headerName => (
+              <div key={headerName} className="header-summary">
+                <h4>{headerName} ({selectedServices[headerName]?.length || 0})</h4>
+                <ul>
+                  {selectedServices[headerName]?.map(service => (
+                    <li key={service.id}>
+                      {service.name}
+                      {service.subServices && service.subServices.filter(sub => sub.included).length > 0 && (
+                        <span className="sub-count">
+                          ({service.subServices.filter(sub => sub.included).length} sub-services)
+                        </span>
                       )}
                     </li>
                   ))}
-              </ul>
-            </div>
-          ))}
-          <div style={{ textAlign: "right" }}>
-            <button
-              onClick={() => {
-                const finalHeaders = Object.keys(summary).map(header => {
-                  const services = summary[header].filter(s => s.isChecked);
-                  return {
-                    name: header,
-                    services
-                  };
-                }).filter(h => h.services.length > 0);
-
-                onComplete(finalHeaders);
-              }}
-              style={{
-                padding: "0.75rem 1.5rem",
-                border: "none",
-                borderRadius: "0.5rem",
-                background: "#2563eb",
-                color: "#fff",
-                cursor: "pointer",
-              }}
-            >
-              Next →
-            </button>
+                </ul>
+              </div>
+            ))}
           </div>
+        )}
+
+        {/* Action Buttons */}
+        <div className="action-buttons">
+          {allSelectedServices.length > 0 && (
+            <button
+              onClick={handleComplete}
+              className="complete-button"
+            >
+              Continue to Pricing
+            </button>
+          )}
         </div>
-      )}
+      </div>
+
+      {/* CSS Styles */}
+      <style jsx>{`
+        .quotation-builder {
+          max-width: 1200px;
+          margin: 0 auto;
+          padding: 20px;
+          font-family: Arial, sans-serif;
+        }
+
+        .builder-container {
+          background: #f9f9f9;
+          border-radius: 8px;
+          padding: 24px;
+        }
+
+        .builder-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 24px;
+          padding-bottom: 16px;
+          border-bottom: 2px solid #e0e0e0;
+        }
+
+        .progress-summary {
+          display: flex;
+          gap: 16px;
+          font-size: 14px;
+          color: #666;
+        }
+
+        .headers-section {
+          margin-bottom: 24px;
+        }
+
+        .headers-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+          gap: 12px;
+        }
+
+        .header-button {
+          padding: 12px 16px;
+          border: 2px solid #ddd;
+          background: white;
+          border-radius: 6px;
+          cursor: pointer;
+          transition: all 0.3s;
+        }
+
+        .header-button:hover {
+          border-color: #007bff;
+          background: #f8f9ff;
+        }
+
+        .custom-button {
+          border-style: dashed;
+          color: #666;
+        }
+
+        .custom-header-form {
+          display: flex;
+          gap: 8px;
+          align-items: center;
+          padding: 8px;
+          background: white;
+          border: 2px solid #ddd;
+          border-radius: 6px;
+        }
+
+        .custom-header-input {
+          flex: 1;
+          padding: 8px;
+          border: 1px solid #ddd;
+          border-radius: 4px;
+        }
+
+        .add-button, .cancel-button {
+          padding: 8px 12px;
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+        }
+
+        .add-button {
+          background: #28a745;
+          color: white;
+        }
+
+        .cancel-button {
+          background: #6c757d;
+          color: white;
+        }
+
+        .selected-headers {
+          margin-bottom: 24px;
+        }
+
+        .headers-list {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+
+        .header-tab {
+          display: flex;
+          align-items: center;
+          background: white;
+          border-radius: 6px;
+          overflow: hidden;
+          box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .header-tab.active {
+          background: #007bff;
+          color: white;
+        }
+
+        .header-tab-button {
+          padding: 12px 16px;
+          border: none;
+          background: none;
+          cursor: pointer;
+          flex: 1;
+        }
+
+        .header-tab.active .header-tab-button {
+          color: white;
+        }
+
+        .service-count {
+          margin-left: 8px;
+          font-size: 12px;
+          opacity: 0.8;
+        }
+
+        .remove-header-button {
+          padding: 12px;
+          border: none;
+          background: #dc3545;
+          color: white;
+          cursor: pointer;
+        }
+
+        .services-section {
+          margin-bottom: 24px;
+        }
+
+        .services-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+          gap: 16px;
+        }
+
+        .service-card {
+          background: white;
+          border: 2px solid #ddd;
+          border-radius: 8px;
+          padding: 16px;
+          transition: all 0.3s;
+        }
+
+        .service-card.selected {
+          border-color: #007bff;
+          background: #f8f9ff;
+        }
+
+        .service-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 12px;
+        }
+
+        .service-checkbox {
+          display: flex;
+          align-items: center;
+          cursor: pointer;
+          flex: 1;
+        }
+
+        .service-checkbox input {
+          margin-right: 12px;
+        }
+
+        .service-name {
+          font-weight: 500;
+        }
+
+        .addon-badge {
+          background: #ffc107;
+          color: #212529;
+          padding: 4px 8px;
+          border-radius: 12px;
+          font-size: 12px;
+          font-weight: 500;
+        }
+
+        .service-details {
+          margin-top: 12px;
+          padding-top: 12px;
+          border-top: 1px solid #e0e0e0;
+        }
+
+        .year-quarter-selection {
+          margin-bottom: 16px;
+        }
+
+        .form-field {
+          margin-bottom: 12px;
+        }
+
+        .form-field label {
+          display: block;
+          margin-bottom: 4px;
+          font-weight: 500;
+        }
+
+        .year-select, .quarter-select {
+          width: 100%;
+          padding: 8px;
+          border: 1px solid #ddd;
+          border-radius: 4px;
+        }
+
+        .sub-services h4 {
+          margin-bottom: 8px;
+          font-size: 14px;
+          color: #333;
+        }
+
+        .sub-services-list {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+          gap: 8px;
+        }
+
+        .sub-service-item {
+          display: flex;
+          align-items: flex-start;
+          cursor: pointer;
+          padding: 4px 0;
+          font-size: 13px;
+        }
+
+        .sub-service-item input {
+          margin-right: 8px;
+          margin-top: 2px;
+        }
+
+        .selection-summary {
+          background: white;
+          border-radius: 8px;
+          padding: 20px;
+          margin-bottom: 24px;
+        }
+
+        .header-summary {
+          margin-bottom: 16px;
+        }
+
+        .header-summary h4 {
+          color: #007bff;
+          margin-bottom: 8px;
+        }
+
+        .header-summary ul {
+          list-style: none;
+          padding-left: 16px;
+        }
+
+        .header-summary li {
+          margin-bottom: 4px;
+          position: relative;
+        }
+
+        .header-summary li:before {
+          content: "•";
+          color: #007bff;
+          position: absolute;
+          left: -12px;
+        }
+
+        .sub-count {
+          color: #666;
+          font-size: 12px;
+        }
+
+        .action-buttons {
+          text-align: center;
+        }
+
+        .complete-button {
+          background: #28a745;
+          color: white;
+          padding: 16px 32px;
+          border: none;
+          border-radius: 8px;
+          font-size: 16px;
+          font-weight: 500;
+          cursor: pointer;
+          transition: all 0.3s;
+        }
+
+        .complete-button:hover {
+          background: #218838;
+          transform: translateY(-2px);
+          box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+      `}</style>
     </div>
   );
 }

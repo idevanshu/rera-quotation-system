@@ -7,11 +7,15 @@ export default function Login() {
 
   const handleLogin = async () => {
     try {
-      const res = await fetch("http://localhost:3001/api/login", {
+      // Use current window's hostname with port 3001
+      const apiUrl = `${window.location.protocol}//${window.location.hostname}:3001/api/login`;
+      
+      const res = await fetch(apiUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, password }),
       });
+      
       const data = await res.json();
       if (res.ok) {
         localStorage.setItem("token", data.token);
@@ -61,9 +65,22 @@ export default function Login() {
       `}</style>
 
       <h2>Login</h2>
-      <input className="auth-input" placeholder="Username" value={username} onChange={(e)=>setUsername(e.target.value)} />
-      <input type="password" className="auth-input" placeholder="Password" value={password} onChange={(e)=>setPassword(e.target.value)} />
-      <button onClick={handleLogin} className="auth-button">Login</button>
+      <input 
+        className="auth-input" 
+        placeholder="Username" 
+        value={username} 
+        onChange={(e) => setUsername(e.target.value)} 
+      />
+      <input 
+        type="password" 
+        className="auth-input" 
+        placeholder="Password" 
+        value={password} 
+        onChange={(e) => setPassword(e.target.value)} 
+      />
+      <button onClick={handleLogin} className="auth-button">
+        Login
+      </button>
       {message && <p>{message}</p>}
     </div>
   );

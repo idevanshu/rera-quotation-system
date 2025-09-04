@@ -12,8 +12,6 @@ import {
   List,
   ListItem,
   ListItemText,
-  Checkbox,
-  FormControlLabel,
   Button,
   CircularProgress,
   Alert,
@@ -37,12 +35,11 @@ const QuotationTerms = () => {
   const [quotationData, setQuotationData] = useState(null);
   const [applicableTerms, setApplicableTerms] = useState({});
   const [customTerms, setCustomTerms] = useState(['']);
-  const [termsAccepted, setTermsAccepted] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [currentUser, setCurrentUser] = useState(null);
   const [showApprovalWarning, setShowApprovalWarning] = useState(false);
-  
+
   const token = localStorage.getItem("token");
 
   // Fetch current user info
@@ -128,32 +125,29 @@ const QuotationTerms = () => {
         const quotation = await response.json();
         setQuotationData(quotation.data);
 
-        // Determine applicable terms based on selected services
+        // Determine applicable terms
         const applicableTermsSets = new Set(['General T&C']);
         quotation.data.headers?.forEach(header => {
-          header.services?.forEach(service => {
-            const termCategory = serviceTermsMapping[service.label] || 'General T&C';
-            applicableTermsSets.add(termCategory);
-          });
-        });
+  header.services?.forEach(service => {
+    const termCategory =
+      serviceTermsMapping[service.name] ||   // match by service.name
+      serviceTermsMapping[header.header] ||  // fallback to header (for Packages)
+      "General T&C";                         // default fallback
+    applicableTermsSets.add(termCategory);
+  });
+});
 
-        // Build applicable terms object
+
         const terms = {};
         Array.from(applicableTermsSets).forEach(category => {
           if (termsData[category] && termsData[category].length > 0) {
             terms[category] = termsData[category];
-          } else if (category === 'Legal' || category === 'Compliance') {
-            terms[category] = termsData['General T&C'];
           }
         });
 
         setApplicableTerms(terms);
 
-        // Load existing terms acceptance status and custom terms
-        if (quotation.data.termsAccepted) {
-          setTermsAccepted(true);
-        }
-
+        // Load existing custom terms
         if (quotation.data.customTerms && quotation.data.customTerms.length > 0) {
           setCustomTerms(quotation.data.customTerms);
         }
@@ -177,10 +171,6 @@ const QuotationTerms = () => {
     setShowApprovalWarning(hasNonEmptyCustomTerms);
   }, [customTerms]);
 
-  const handleAcceptTerms = (accepted) => {
-    setTermsAccepted(accepted);
-  };
-
   const handleAddCustomTerm = () => {
     setCustomTerms([...customTerms, '']);
   };
@@ -199,18 +189,11 @@ const QuotationTerms = () => {
   };
 
   const handleSaveAndContinue = async () => {
-    if (!termsAccepted) {
-      alert('Please accept the terms and conditions to proceed.');
-      return;
-    }
-
     try {
       setLoading(true);
-      
-      // Filter out empty custom terms
+
       const validCustomTerms = customTerms.filter(term => term.trim() !== '');
 
-      // Save terms acceptance status
       await fetch(`/api/quotations/${id}/terms`, {
         method: 'PUT',
         headers: { 
@@ -218,23 +201,17 @@ const QuotationTerms = () => {
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          termsAccepted: true,
+          termsAccepted: true, // always true since checkbox removed
           applicableTerms: Object.keys(applicableTerms),
           customTerms: validCustomTerms
         }),
       });
 
-      // Navigate to summary or dashboard based on approval status
-      if (validCustomTerms.length > 0) {
-        // Has custom terms - will require approval
-        alert('Quotation submitted for approval due to custom terms. You will be notified once approved.');
-        navigate('/dashboard');
-      } else {
-        // No custom terms - proceed normally
-        navigate(`/quotations/${id}/summary`);
-      }
 
-    } catch (err) {
+        navigate(`/quotations/${id}/summary`);
+  
+
+    }catch (err) {
       console.error('Error saving terms:', err);
       setError('Failed to save terms acceptance');
     } finally {
@@ -276,7 +253,7 @@ const QuotationTerms = () => {
           Terms & Conditions
         </Typography>
         <Typography variant="subtitle1" color="text.secondary">
-          Please review and accept the terms and conditions applicable to your selected services
+          Please review the terms and conditions applicable to your selected services
         </Typography>
       </Box>
 
@@ -396,7 +373,6 @@ const QuotationTerms = () => {
             Add any additional terms and conditions specific to your project or requirements.
           </Typography>
 
-          {/* ✅ Approval Warning for Custom Terms */}
           {showApprovalWarning && (
             <Alert 
               severity="warning" 
@@ -441,31 +417,6 @@ const QuotationTerms = () => {
         </CardContent>
       </Card>
 
-      {/* Terms Acceptance */}
-      <Card sx={{ mb: 3 }}>
-        <CardContent>
-          <FormControlLabel
-            control={
-              <Checkbox
-                checked={termsAccepted}
-                onChange={(e) => handleAcceptTerms(e.target.checked)}
-                color="primary"
-              />
-            }
-            label={
-              <Typography variant="body1">
-                I have read, understood, and agree to all the above terms and conditions
-                {showApprovalWarning && (
-                  <Typography variant="body2" color="warning.main" component="div" sx={{ mt: 1 }}>
-                    * This quotation will require approval due to custom terms
-                  </Typography>
-                )}
-              </Typography>
-            }
-          />
-        </CardContent>
-      </Card>
-
       {/* Navigation Buttons */}
       <Box display="flex" justifyContent="space-between" mt={4}>
         <Button
@@ -482,7 +433,7 @@ const QuotationTerms = () => {
           onClick={handleSaveAndContinue}
           variant="contained"
           size="large"
-          disabled={!termsAccepted || loading}
+          disabled={loading}
           endIcon={<ArrowForwardIcon />}
         >
           {loading ? 'Saving...' : 'Accept & Continue'}

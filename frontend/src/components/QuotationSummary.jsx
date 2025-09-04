@@ -1,10 +1,159 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import {
+  Box,
+  Paper,
+  Typography,
+  Button,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  Divider,
+  Grid,
+  Card,
+  CardContent,
+  CircularProgress,
+  Alert,
+  Chip
+} from '@mui/material';
+import {
+  Download as DownloadIcon,
+  CheckCircle as CheckCircleIcon,
+  Business as BusinessIcon,
+  LocationOn as LocationIcon,
+  CalendarToday as CalendarIcon,
+  AccountBalance as AccountBalanceIcon
+} from '@mui/icons-material';
+import { SERVICES } from '../lib/servicesData';
+
+/**
+ * QuotationSummary.jsx - Fixed Version with Proper Subservice Loading
+ * - Properly loads and displays actual subservice names from servicesData.js
+ * - Uses Material-UI for PDF-like preview layout
+ * - Removes edit pricing and back to dashboard buttons
+ * - Changes "create new quotation" to "complete quotation" with dashboard redirect
+ * - Shows individual pricing next to service names, total at bottom
+ */
+
+const slugify = (str = '') => String(str)
+  .toLowerCase()
+  .trim()
+  .replace(/[\s_]+/g, '-')
+  .replace(/[^a-z0-9-]/g, '')
+  .replace(/-+/g, '-');
+
+const ensureUniqueId = (base, used) => {
+  if (!base) base = `id-${Math.random().toString(36).slice(2, 8)}`;
+  let id = base;
+  let i = 1;
+  while (used.has(id)) {
+    id = `${base}-${i++}`;
+  }
+  used.add(id);
+  return id;
+};
+
+// Helper function to find service by ID in servicesData
+const findServiceById = (serviceId) => {
+  for (const headerName in SERVICES) {
+    const services = SERVICES[headerName];
+    for (const service of services) {
+      if (service.id === serviceId) {
+        return service;
+      }
+    }
+  }
+  return null;
+};
+
+// Helper function to find service by name
+const findServiceByName = (serviceName) => {
+  for (const headerName in SERVICES) {
+    const services = SERVICES[headerName];
+    for (const service of services) {
+      if (service.name === serviceName) {
+        return service;
+      }
+    }
+  }
+  return null;
+};
+
+const normalizeQuotation = (raw) => {
+  const usedIds = new Set();
+  const normalized = { ...raw };
+  
+  const headers = Array.isArray(raw.headers) ? raw.headers : [];
+  normalized.headers = headers.map((header, hIndex) => {
+    const headerName = header?.name || header?.header || `Header ${hIndex + 1}`;
+    const baseHeaderId = header?.id || `header-${slugify(headerName)}` || `header-${hIndex}`;
+    const headerId = ensureUniqueId(baseHeaderId, usedIds);
+
+    const services = Array.isArray(header.services) ? header.services : [];
+    const normalizedServices = services.map((service, sIndex) => {
+      const serviceName = service?.name || service?.label || service?.title || `Service ${sIndex + 1}`;
+      const baseServiceId = service?.id || `${headerId}-service-${slugify(serviceName)}` || `${headerId}-service-${sIndex}`;
+      const serviceId = ensureUniqueId(baseServiceId, usedIds);
+
+      // Try to find the actual service data from servicesData.js
+      let actualServiceData = null;
+      if (service?.id) {
+        actualServiceData = findServiceById(service.id);
+      }
+      if (!actualServiceData && serviceName) {
+        actualServiceData = findServiceByName(serviceName);
+      }
+
+      let normalizedSubServices = [];
+      
+      if (actualServiceData && actualServiceData.subServices) {
+        // Use the actual subservices from servicesData.js
+        normalizedSubServices = actualServiceData.subServices.map((sub) => ({
+          id: sub.id,
+          name: sub.name
+        }));
+      } else {
+        // Fallback to the subservices from the API data if available
+        const rawSubServices = Array.isArray(service.subServices) ? service.subServices : [];
+        normalizedSubServices = rawSubServices.map((sub, subIndex) => {
+          if (typeof sub === 'string') {
+            const name = sub;
+            const baseSubId = `${serviceId}-sub-${slugify(name)}` || `${serviceId}-sub-${subIndex}`;
+            const subId = ensureUniqueId(baseSubId, usedIds);
+            return { id: subId, name };
+          }
+
+          const subName = sub?.name || sub?.label || sub?.title || `Sub ${subIndex + 1}`;
+          const baseSubId = sub?.id || `${serviceId}-sub-${slugify(subName)}` || `${serviceId}-sub-${subIndex}`;
+          const subId = ensureUniqueId(baseSubId, usedIds);
+          return { id: subId, name: subName };
+        });
+      }
+
+      return {
+        id: serviceId,
+        name: serviceName,
+        subServices: normalizedSubServices,
+        price: service?.price || 0
+      };
+    });
+
+    return {
+      id: headerId,
+      name: headerName,
+      services: normalizedServices
+    };
+  });
+
+  return normalized;
+};
 
 const QuotationSummary = () => {
   const navigate = useNavigate();
   const { id } = useParams();
-  
   const [quotation, setQuotation] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -12,13 +161,19 @@ const QuotationSummary = () => {
   useEffect(() => {
     const fetchQuotation = async () => {
       try {
+        setLoading(true);
         const response = await fetch(`/api/quotations/${id}`);
         if (!response.ok) throw new Error('Failed to fetch quotation');
         
-        const data = await response.json();
-        setQuotation(data.data);
+        const payload = await response.json();
+        const rawData = payload?.data || payload || {};
+        
+        const normalized = normalizeQuotation(rawData);
+        console.log('Normalized quotation with actual subservices:', normalized);
+        setQuotation(normalized);
       } catch (err) {
-        setError(err.message);
+        console.error('Error fetching quotation:', err);
+        setError(err.message || 'Unknown error');
       } finally {
         setLoading(false);
       }
@@ -29,7 +184,7 @@ const QuotationSummary = () => {
 
   const handleDownload = () => {
     if (!quotation) return;
-    
+
     const quotationData = {
       id: quotation.id,
       projectDetails: {
@@ -42,389 +197,324 @@ const QuotationSummary = () => {
         paymentSchedule: quotation.paymentSchedule,
         reraNumber: quotation.reraNumber
       },
-      services: quotation.headers || [],
+      services: quotation.headers?.map(h => ({
+        id: h.id,
+        name: h.name,
+        services: h.services?.map(s => ({
+          id: s.id,
+          name: s.name,
+          price: s.price,
+          subServices: s.subServices?.map(ss => ({
+            id: ss.id,
+            name: ss.name
+          })) || []
+        })) || []
+      })) || [],
       pricing: quotation.pricingBreakdown || [],
       totalAmount: quotation.totalAmount || 0,
       createdAt: quotation.createdAt
     };
 
-    const blob = new Blob([JSON.stringify(quotationData, null, 2)], { 
-      type: 'application/json' 
+    const blob = new Blob([JSON.stringify(quotationData, null, 2)], {
+      type: 'application/json'
     });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `quotation-${quotation.id}.json`;
+    a.download = `quotation-${quotation.id || 'export'}.json`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
 
-  if (loading) return <div style={loadingStyle}>Loading quotation...</div>;
-  if (error) return <div style={errorStyle}>Error: {error}</div>;
-  if (!quotation) return <div style={errorStyle}>Quotation not found</div>;
+  const handleCompleteQuotation = () => {
+    navigate('/dashboard');
+  };
 
-  const totalAmount = quotation.totalAmount || 0;
-  const subtotal = Math.round(totalAmount / 1.18);
-  const tax = totalAmount - subtotal;
+  const calculateTotalAmount = () => {
+    if (!quotation?.headers) return 0;
+    
+    return quotation.headers.reduce((total, header) => {
+      return total + header.services.reduce((headerTotal, service) => {
+        return headerTotal + (service.price || 0);
+      }, 0);
+    }, 0);
+  };
+
+  if (loading) {
+    return (
+      <Box display="flex" justifyContent="center" alignItems="center" minHeight="400px">
+        <CircularProgress size={60} />
+      </Box>
+    );
+  }
+
+  if (error) {
+    return (
+      <Box p={3}>
+        <Alert severity="error">
+          Error loading quotation: {error}
+        </Alert>
+      </Box>
+    );
+  }
+
+  if (!quotation) {
+    return (
+      <Box p={3}>
+        <Alert severity="warning">
+          No quotation data available
+        </Alert>
+      </Box>
+    );
+  }
 
   return (
-    <div style={containerStyle}>
-      {/* Header */}
-      <div style={headerStyle}>
-        <div>
-          <h1 style={titleStyle}>Quotation Summary</h1>
-          <p style={subtitleStyle}>
-            Complete quotation for {quotation.projectName || quotation.developerName}
-          </p>
-        </div>
-        <div style={headerActionsStyle}>
-          <button 
-            style={btnSecondaryStyle}
-            onClick={() => navigate(`/quotations/${id}/pricing`)}
-          >
-            Edit Pricing
-          </button>
-          <button 
-            style={btnPrimaryStyle}
-            onClick={handleDownload}
-          >
-            Download
-          </button>
-        </div>
-      </div>
+    <Box sx={{ maxWidth: '1200px', margin: '0 auto', p: 3, backgroundColor: '#f5f5f5', minHeight: '100vh' }}>
+      {/* PDF-like Header */}
+      <Paper elevation={3} sx={{ mb: 3, overflow: 'hidden' }}>
+        <Box sx={{ 
+          background: 'linear-gradient(45deg, #1976d2 30%, #21CBF3 90%)',
+          color: 'white',
+          p: 3,
+          textAlign: 'center'
+        }}>
+          <Typography variant="h4" fontWeight="bold" gutterBottom>
+            QUOTATION SUMMARY
+          </Typography>
+          <Typography variant="h6">
+            {quotation.projectName || quotation.developerName}
+          </Typography>
+          <Chip 
+            label={`ID: ${quotation.id}`}
+            variant="outlined"
+            sx={{ 
+              color: 'white', 
+              borderColor: 'white',
+              mt: 1,
+              fontWeight: 'bold'
+            }}
+          />
+        </Box>
+      </Paper>
 
-      {/* Success Message */}
-      <div style={successMessageStyle}>
-        <div style={successIconStyle}>✓</div>
-        <div>
-          <h3>Quotation Created Successfully!</h3>
-          <p>Quotation ID: <strong>{quotation.id}</strong></p>
-        </div>
-      </div>
+      {/* Project Details Card */}
+      <Paper elevation={2} sx={{ mb: 3 }}>
+        <Box sx={{ p: 3 }}>
+          <Typography variant="h5" color="primary" gutterBottom sx={{ display: 'flex', alignItems: 'center', mb: 3 }}>
+            <BusinessIcon sx={{ mr: 1 }} />
+            Project Details
+          </Typography>
+          
+          <Grid container spacing={3}>
+            <Grid item xs={12} md={6}>
+              <Card variant="outlined" sx={{ height: '100%' }}>
+                <CardContent>
+                  <Typography variant="h6" color="secondary" gutterBottom>
+                    Developer Information
+                  </Typography>
+                  <Box sx={{ mt: 2 }}>
+                    <Typography variant="body1" sx={{ mb: 1 }}>
+                      <strong>Developer:</strong> {quotation.developerName || 'N/A'}
+                    </Typography>
+                    <Typography variant="body1" sx={{ mb: 1 }}>
+                      <strong>Type:</strong> {quotation.developerType || 'N/A'}
+                    </Typography>
+                    <Typography variant="body1">
+                      <strong>RERA Number:</strong> {quotation.reraNumber || 'N/A'}
+                    </Typography>
+                  </Box>
+                </CardContent>
+              </Card>
+            </Grid>
+            
+            <Grid item xs={12} md={6}>
+              <Card variant="outlined" sx={{ height: '100%' }}>
+                <CardContent>
+                  <Typography variant="h6" color="secondary" gutterBottom>
+                    Project Information
+                  </Typography>
+                  <Box sx={{ mt: 2 }}>
+                    <Typography variant="body1" sx={{ mb: 1, display: 'flex', alignItems: 'center' }}>
+                      <LocationIcon sx={{ mr: 1, fontSize: 16 }} />
+                      <strong>Region:</strong> {quotation.projectRegion || 'N/A'}
+                    </Typography>
+                    <Typography variant="body1" sx={{ mb: 1 }}>
+                      <strong>Plot Area:</strong> {quotation.plotArea || 'N/A'}
+                    </Typography>
+                    <Typography variant="body1" sx={{ mb: 1, display: 'flex', alignItems: 'center' }}>
+                      <CalendarIcon sx={{ mr: 1, fontSize: 16 }} />
+                      <strong>Validity:</strong> {quotation.validity || 'N/A'}
+                    </Typography>
+                    <Typography variant="body1" sx={{ display: 'flex', alignItems: 'center' }}>
+                      <AccountBalanceIcon sx={{ mr: 1, fontSize: 16 }} />
+                      <strong>Payment:</strong> {quotation.paymentSchedule || 'N/A'}
+                    </Typography>
+                  </Box>
+                </CardContent>
+              </Card>
+            </Grid>
+          </Grid>
+        </Box>
+      </Paper>
 
-      {/* Project Details */}
-      <div style={sectionStyle}>
-        <h3 style={sectionTitleStyle}>Project Details</h3>
-        <div style={detailsGridStyle}>
-          <div style={detailItemStyle}>
-            <span style={labelStyle}>Developer Name:</span>
-            <span>{quotation.developerName}</span>
-          </div>
-          <div style={detailItemStyle}>
-            <span style={labelStyle}>Project Name:</span>
-            <span>{quotation.projectName || 'N/A'}</span>
-          </div>
-          <div style={detailItemStyle}>
-            <span style={labelStyle}>Developer Type:</span>
-            <span>{quotation.developerType}</span>
-          </div>
-          <div style={detailItemStyle}>
-            <span style={labelStyle}>Project Region:</span>
-            <span>{quotation.projectRegion}</span>
-          </div>
-          <div style={detailItemStyle}>
-            <span style={labelStyle}>Plot Area:</span>
-            <span>{quotation.plotArea} sq units</span>
-          </div>
-          <div style={detailItemStyle}>
-            <span style={labelStyle}>Validity:</span>
-            <span>{quotation.validity}</span>
-          </div>
-          <div style={detailItemStyle}>
-            <span style={labelStyle}>Payment Schedule:</span>
-            <span>{quotation.paymentSchedule}</span>
-          </div>
-          {quotation.reraNumber && (
-            <div style={detailItemStyle}>
-              <span style={labelStyle}>RERA Number:</span>
-              <span>{quotation.reraNumber}</span>
-            </div>
+      {/* Services Section */}
+      <Paper elevation={2} sx={{ mb: 3 }}>
+        <Box sx={{ p: 3 }}>
+          <Typography variant="h5" color="primary" gutterBottom sx={{ mb: 3 }}>
+            Selected Services
+          </Typography>
+
+          {quotation.headers && quotation.headers.length > 0 ? (
+            quotation.headers.map((header) => (
+              <Box key={header.id} sx={{ mb: 4 }}>
+                <Typography 
+                  variant="h6" 
+                  sx={{ 
+                    mb: 2, 
+                    p: 2, 
+                    backgroundColor: 'primary.main', 
+                    color: 'white', 
+                    borderRadius: 1,
+                    fontWeight: 'bold'
+                  }}
+                >
+                  {header.name}
+                </Typography>
+
+                {header.services && header.services.length > 0 ? (
+                  header.services.map((service) => (
+                    <Card key={service.id} variant="outlined" sx={{ mb: 2 }}>
+                      <CardContent>
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                          <Typography variant="h6" color="secondary" sx={{ flex: 1 }}>
+                            {service.name}
+                          </Typography>
+                          {service.price > 0 && (
+                            <Chip 
+                              label={`₹${service.price.toLocaleString()}`}
+                              color="primary"
+                              variant="filled"
+                              sx={{ 
+                                fontWeight: 'bold',
+                                fontSize: '0.9rem',
+                                ml: 2
+                              }}
+                            />
+                          )}
+                        </Box>
+
+                        {service.subServices && service.subServices.length > 0 && (
+                          <TableContainer component={Box}>
+                            <Table size="small">
+                              <TableHead>
+                                <TableRow>
+                                  <TableCell sx={{ fontWeight: 'bold', backgroundColor: '#f5f5f5' }}>
+                                    Sub-Services
+                                  </TableCell>
+                                </TableRow>
+                              </TableHead>
+                              <TableBody>
+                                {service.subServices.map((subService, index) => (
+                                  <TableRow key={subService.id} sx={{ 
+                                    '&:nth-of-type(odd)': { backgroundColor: '#fafafa' }
+                                  }}>
+                                    <TableCell>
+                                      <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1 }}>
+                                        <CheckCircleIcon 
+                                          sx={{ 
+                                            mt: 0.2,
+                                            fontSize: 16, 
+                                            color: 'success.main',
+                                            flexShrink: 0
+                                          }} 
+                                        />
+                                        <Typography variant="body2" sx={{ lineHeight: 1.4 }}>
+                                          {subService.name}
+                                        </Typography>
+                                      </Box>
+                                    </TableCell>
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                            </Table>
+                          </TableContainer>
+                        )}
+                      </CardContent>
+                    </Card>
+                  ))
+                ) : (
+                  <Typography variant="body2" color="text.secondary" sx={{ fontStyle: 'italic', ml: 2 }}>
+                    No services selected for this category
+                  </Typography>
+                )}
+              </Box>
+            ))
+          ) : (
+            <Alert severity="info">
+              No services selected
+            </Alert>
           )}
-        </div>
-      </div>
+        </Box>
+      </Paper>
 
-      {/* Selected Services */}
-      <div style={sectionStyle}>
-        <h3 style={sectionTitleStyle}>Selected Services</h3>
-        {quotation.headers && quotation.headers.length > 0 ? (
-          quotation.headers.map((header, index) => (
-            <div key={index} style={serviceHeaderStyle}>
-              <h4 style={serviceHeaderTitleStyle}>{header.header}</h4>
-              <div style={servicesListStyle}>
-                {header.services.map((service, serviceIndex) => (
-                  <div key={serviceIndex} style={serviceItemStyle}>
-                    <div style={serviceNameStyle}>{service.label}</div>
-                    {service.subServices && service.subServices.length > 0 && (
-                      <div style={subServicesStyle}>
-                        {service.subServices.map((subService, subIndex) => (
-                          <span key={subIndex} style={subServiceTagStyle}>
-                            {subService.text}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))
-        ) : (
-          <p style={noDataStyle}>No services selected</p>
-        )}
-      </div>
+      {/* Total Amount Section - Simplified */}
+      <Paper elevation={2} sx={{ mb: 3 }}>
+        <Box sx={{ p: 3 }}>
+          <Box sx={{ 
+            display: 'flex', 
+            justifyContent: 'space-between', 
+            alignItems: 'center',
+            p: 3,
+            backgroundColor: 'success.light',
+            borderRadius: 2
+          }}>
+            <Typography variant="h4" fontWeight="bold" color="success.main">
+              Total Amount
+            </Typography>
+            <Typography variant="h3" fontWeight="bold" color="success.main">
+              ₹{(quotation.totalAmount || calculateTotalAmount()).toLocaleString()}
+            </Typography>
+          </Box>
+        </Box>
+      </Paper>
 
-      {/* Pricing Summary */}
-      {quotation.pricingBreakdown && quotation.pricingBreakdown.length > 0 && (
-        <div style={sectionStyle}>
-          <h3 style={sectionTitleStyle}>Pricing Summary</h3>
-          <div style={pricingSummaryStyle}>
-            <div style={pricingRowStyle}>
-              <span>Subtotal:</span>
-              <span>₹{subtotal.toLocaleString()}</span>
-            </div>
-            <div style={pricingRowStyle}>
-              <span>GST (18%):</span>
-              <span>₹{tax.toLocaleString()}</span>
-            </div>
-            <div style={finalTotalStyle}>
-              <span>Total Amount:</span>
-              <span>₹{totalAmount.toLocaleString()}</span>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Actions */}
-      <div style={actionsStyle}>
-        <button 
-          style={btnSecondaryStyle}
-          onClick={() => navigate('/')}
+      {/* Action Buttons */}
+      <Box sx={{ display: 'flex', gap: 2, justifyContent: 'center', mt: 4 }}>
+        <Button
+          variant="outlined"
+          startIcon={<DownloadIcon />}
+          onClick={handleDownload}
+          size="large"
         >
-          Back to Dashboard
-        </button>
-        <button 
-          style={btnPrimaryStyle}
-          onClick={() => navigate('/quotations/new')}
+          Download Quotation
+        </Button>
+        
+        <Button
+          variant="contained"
+          startIcon={<CheckCircleIcon />}
+          onClick={handleCompleteQuotation}
+          size="large"
+          sx={{ 
+            px: 4,
+            background: 'linear-gradient(45deg, #4caf50 30%, #8bc34a 90%)'
+          }}
         >
-          Create New Quotation
-        </button>
-      </div>
-    </div>
+          Complete Quotation
+        </Button>
+      </Box>
+
+      {/* Footer */}
+      <Box sx={{ textAlign: 'center', mt: 4, p: 2, color: 'text.secondary' }}>
+        <Divider sx={{ mb: 2 }} />
+        <Typography variant="body2">
+          Generated on {new Date().toLocaleDateString()} | 
+          Quotation ID: {quotation.id}
+        </Typography>
+      </Box>
+    </Box>
   );
-};
-
-// Styles
-const containerStyle = {
-  maxWidth: '1000px',
-  margin: '0 auto',
-  padding: '24px',
-  backgroundColor: '#f8fafc',
-  minHeight: '100vh'
-};
-
-const headerStyle = {
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'flex-start',
-  marginBottom: '32px'
-};
-
-const titleStyle = {
-  fontSize: '32px',
-  fontWeight: '700',
-  margin: '0 0 8px 0',
-  color: '#1f2937'
-};
-
-const subtitleStyle = {
-  color: '#6b7280',
-  margin: '0',
-  fontSize: '16px'
-};
-
-const headerActionsStyle = {
-  display: 'flex',
-  gap: '12px'
-};
-
-const btnSecondaryStyle = {
-  padding: '10px 16px',
-  background: '#6b7280',
-  color: '#ffffff',
-  border: 0,
-  borderRadius: '6px',
-  cursor: 'pointer',
-  fontWeight: '500'
-};
-
-const btnPrimaryStyle = {
-  padding: '10px 16px',
-  background: '#1e40af',
-  color: '#ffffff',
-  border: 0,
-  borderRadius: '6px',
-  cursor: 'pointer',
-  fontWeight: '500'
-};
-
-const successMessageStyle = {
-  backgroundColor: '#dcfce7',
-  border: '1px solid #bbf7d0',
-  borderRadius: '8px',
-  padding: '20px',
-  marginBottom: '32px',
-  display: 'flex',
-  alignItems: 'center',
-  gap: '16px'
-};
-
-const successIconStyle = {
-  width: '48px',
-  height: '48px',
-  backgroundColor: '#22c55e',
-  color: 'white',
-  borderRadius: '50%',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  fontSize: '24px',
-  fontWeight: 'bold'
-};
-
-const sectionStyle = {
-  backgroundColor: '#ffffff',
-  borderRadius: '8px',
-  padding: '24px',
-  marginBottom: '24px',
-  border: '1px solid #e5e7eb'
-};
-
-const sectionTitleStyle = {
-  fontSize: '20px',
-  fontWeight: '600',
-  marginBottom: '16px',
-  color: '#1f2937'
-};
-
-const detailsGridStyle = {
-  display: 'grid',
-  gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
-  gap: '16px'
-};
-
-const detailItemStyle = {
-  display: 'flex',
-  flexDirection: 'column',
-  gap: '4px'
-};
-
-const labelStyle = {
-  fontSize: '14px',
-  fontWeight: '500',
-  color: '#6b7280'
-};
-
-const serviceHeaderStyle = {
-  marginBottom: '24px',
-  paddingBottom: '16px',
-  borderBottom: '1px solid #f3f4f6'
-};
-
-const serviceHeaderTitleStyle = {
-  fontSize: '18px',
-  fontWeight: '600',
-  marginBottom: '12px',
-  color: '#1f2937'
-};
-
-const servicesListStyle = {
-  display: 'flex',
-  flexDirection: 'column',
-  gap: '12px'
-};
-
-const serviceItemStyle = {
-  padding: '12px',
-  backgroundColor: '#f9fafb',
-  borderRadius: '6px',
-  border: '1px solid #e5e7eb'
-};
-
-const serviceNameStyle = {
-  fontSize: '16px',
-  fontWeight: '500',
-  marginBottom: '8px'
-};
-
-const subServicesStyle = {
-  display: 'flex',
-  flexWrap: 'wrap',
-  gap: '6px'
-};
-
-const subServiceTagStyle = {
-  backgroundColor: '#dbeafe',
-  color: '#1e40af',
-  padding: '2px 8px',
-  borderRadius: '12px',
-  fontSize: '12px'
-};
-
-const pricingSummaryStyle = {
-  backgroundColor: '#f8fafc',
-  padding: '20px',
-  borderRadius: '8px',
-  border: '1px solid #e5e7eb'
-};
-
-const pricingRowStyle = {
-  display: 'flex',
-  justifyContent: 'space-between',
-  marginBottom: '12px',
-  fontSize: '16px'
-};
-
-const finalTotalStyle = {
-  display: 'flex',
-  justifyContent: 'space-between',
-  fontSize: '20px',
-  fontWeight: '700',
-  paddingTop: '12px',
-  borderTop: '2px solid #e5e7eb',
-  color: '#1e40af'
-};
-
-const actionsStyle = {
-  display: 'flex',
-  justifyContent: 'space-between',
-  marginTop: '32px'
-};
-
-const loadingStyle = {
-  display: 'flex',
-  justifyContent: 'center',
-  alignItems: 'center',
-  height: '100vh',
-  fontSize: '18px',
-  color: '#6b7280'
-};
-
-const errorStyle = {
-  display: 'flex',
-  justifyContent: 'center',
-  alignItems: 'center',
-  height: '100vh',
-  fontSize: '18px',
-  color: '#dc2626'
-};
-
-const noDataStyle = {
-  color: '#6b7280',
-  fontStyle: 'italic',
-  textAlign: 'center',
-  padding: '20px'
 };
 
 export default QuotationSummary;
