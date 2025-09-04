@@ -34,7 +34,7 @@ backend/node_modules/
 backend/.env
 backend/.DS_Store
 backend/instance/
-
+backend/temp_pdfs/
 # Database
 database/*.sqlite3
 database/*.db

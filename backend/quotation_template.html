@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Quotation</title>
+<style>
+  body{font-family:Arial, sans-serif;font-size:13px;margin:20px;color:#000}
+
+  /* Header: dynamic title on the left, logo pinned to top-right, thick underline */
+  .header{
+    display:flex;
+    justify-content:space-between;
+    align-items:flex-start;          /* logo truly touches top edge */
+    border-bottom:2px solid #000;
+    padding-bottom:6px;
+    margin-bottom:12px
+  }
+  .header span{font-size:20px;font-weight:700;letter-spacing:.3px;align-self:flex-end}
+  .header img{height:40px;width:auto;align-self:flex-start}
+
+  /* Table with strong row separators and single divider before price */
+  table{width:100%;border-collapse:collapse;margin-bottom:20px}
+  td{padding:8px 10px;vertical-align:top}
+
+  /* thick horizontal lines between sections (first row slightly lighter) */
+  .row td{border-top:2px solid #000}
+  .row.first td{border-top:1.5px solid #000}
+
+  /* left vertical label column: own right border so text doesn't touch list */
+  .vcol{border-left:1.5px solid #000;border-right:1.5px solid #000;width:58px}
+  .vertical-text{
+    writing-mode:vertical-rl;
+    transform:rotate(180deg);
+    text-align:center;
+    font-weight:700;
+    font-size:12px;
+    letter-spacing:1.1px;
+    white-space:nowrap
+  }
+
+  /* middle services column: no side borders, padded so bullets don't crowd */
+  .services{font-size:12.75px;line-height:1.35;padding-left:14px}
+  .services div{margin-bottom:4px}
+
+  /* right price column: single vertical divider + outer right rail */
+  .price{
+    border-left:1.5px solid #000;
+    border-right:1.5px solid #000;
+    width:125px;
+    white-space:nowrap;
+    font-weight:700;
+    text-align:right;
+    font-size:13px
+  }
+
+  /* total row span + strong rule */
+  .total-row td{border-top:2px solid #000 !important;font-weight:700;text-align:right;font-size:13px}
+  .total-row td:first-child{border-left:1.5px solid #000}
+  .total-row td:last-child{border-right:1.5px solid #000}
+  .total-row .price{border-left:1.5px solid #000}
+
+  /* terms + ref */
+  .terms{font-size:12px;margin-top:18px}
+  .terms strong{display:block;margin-bottom:4px}
+  .terms ul{margin:0 0 0 18px;padding:0}
+  .terms li{margin:3px 0}
+  .ref-number{margin-top:18px;font-weight:700;font-size:13px}
+</style>
+</head>
+<body>
+  <div class="header">
+    <!-- Dynamic page heading from Python -->
+    <span>{{ header }}</span>
+    <!-- Logo on extreme top-right (use file:/// URI) -->
+    <img src="{{ logo_src }}" alt="Logo">
+  </div>
+
+  <table>
+    {% for section in sections %}
+    <tr class="row {% if loop.first %}first{% endif %}">
+      <td class="vcol"><div class="vertical-text">{{ section.header }}</div></td>
+      <td class="services">
+        {% for item in section.services %}
+          <div>• {{ item }}</div>
+        {% endfor %}
+      </td>
+      <td class="price">₹ {{ "{:,}".format(section.amount) }}<sup>*</sup></td>
+    </tr>
+    {% endfor %}
+    <tr class="total-row">
+      <td colspan="2">Total Payable Amount</td>
+      <td class="price">₹ {{ "{:,}".format(total) }}<sup>*</sup></td>
+    </tr>
+  </table>
+
+  <div class="terms">
+    <strong>Terms & Conditions:</strong>
+    <ul>
+      {% for term in terms %}
+        <li>{{ term }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+
+  <div class="ref-number">{{ ref_number }}</div>
+</body>
+</html>

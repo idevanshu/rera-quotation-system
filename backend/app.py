@@ -9,11 +9,21 @@ import jwt, uuid, json, traceback, logging, os
 from pdf_generator import QuotationPDFGenerator
 import threading
 import time
-
 from agent_routes import agent_bp
 
-app = Flask(__name__)
+# **Import from our services_data module**
+from services_data import (
+    get_actual_subservices,
+    is_package_header,
+    is_customized_header,
+    get_services_for_package,
+    process_headers_with_subservices,
+    calculate_enhanced_pricing,
+    requires_approval_due_to_packages,
+    requires_approval_due_to_customized_header
+)
 
+app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///quotations.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = 'dev-secret-key'
@@ -25,8 +35,9 @@ app.logger.setLevel(logging.DEBUG)
 
 db = SQLAlchemy(app)
 
+# CORS Configuration - Allow ALL origins
 CORS(app,
-     origins=['http://localhost:3000'],
+     origins=['*'],
      methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
      allow_headers=['Content-Type', 'Authorization'],
      expose_headers=['Content-Disposition'],
@@ -36,7 +47,7 @@ CORS(app,
 def handle_preflight():
     if request.method == "OPTIONS":
         response = jsonify()
-        response.headers.add("Access-Control-Allow-Origin", "http://localhost:3000")
+        response.headers.add("Access-Control-Allow-Origin", "*")
         response.headers.add('Access-Control-Allow-Headers', "Content-Type,Authorization")
         response.headers.add('Access-Control-Allow-Methods', "GET,PUT,POST,DELETE,OPTIONS")
         response.headers.add('Access-Control-Allow-Credentials', "true")
@@ -62,9 +73,35 @@ def cleanup_temp_pdf(filepath, delay=300):
                 app.logger.debug(f"Cleaned up temp PDF: {filepath}")
         except Exception as e:
             app.logger.error(f"Failed to cleanup temp PDF {filepath}: {str(e)}")
+    
     cleanup_thread = threading.Thread(target=delete_file)
     cleanup_thread.daemon = True
     cleanup_thread.start()
+
+def get_next_quotation_number():
+    """Generate next sequential quotation number"""
+    try:
+        existing_quotations = db.session.query(Quotation.id).filter(
+            Quotation.id.like('REQ %')
+        ).all()
+        
+        if not existing_quotations:
+            return 1
+        
+        numbers = []
+        for (quote_id,) in existing_quotations:
+            try:
+                parts = quote_id.split(' ')
+                if len(parts) == 2 and parts[1].isdigit():
+                    numbers.append(int(parts[1]))
+            except:
+                continue
+        
+        return max(numbers) + 1 if numbers else 1
+    
+    except Exception as e:
+        app.logger.error(f"Error getting next quotation number: {str(e)}")
+        return 1
 
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -93,12 +130,10 @@ class Quotation(db.Model):
     validity = db.Column(db.String(20), default='7 days')
     payment_schedule = db.Column(db.String(10), default='50%')
     rera_number = db.Column(db.String(50))
-
     headers = db.Column(MutableList.as_mutable(db.JSON))
     pricing_breakdown = db.Column(MutableList.as_mutable(db.JSON))
     applicable_terms = db.Column(MutableList.as_mutable(db.JSON))
     custom_terms = db.Column(MutableList.as_mutable(db.JSON))
-
     total_amount = db.Column(db.Float, default=0.0)
     discount_amount = db.Column(db.Float, default=0.0)
     discount_percent = db.Column(db.Float, default=0.0)
@@ -117,6 +152,7 @@ class Quotation(db.Model):
             else (self.discount_amount / (self.total_amount + self.discount_amount) * 100
                   if self.total_amount and self.discount_amount else 0)
         )
+        
         return {
             'id': self.id,
             'developerType': self.developer_type,
@@ -145,28 +181,6 @@ class Quotation(db.Model):
             'approvedBy': self.approved_by,
             'approvedAt': self.approved_at.isoformat() if self.approved_at else None
         }
-
-def requires_approval_due_to_packages(headers):
-    if not headers:
-        return False
-    for header_data in headers:
-        header_name = header_data.get('header', '') or header_data.get('name', '')
-        if header_name and 'package' in header_name.lower():
-            services = header_data.get('services', [])
-            if services and len(services) > 0:
-                return True
-    return False
-
-def requires_approval_due_to_customized_header(headers):
-    if not headers:
-        return False
-    for header_data in headers:
-        header_name = header_data.get('header', '') or header_data.get('name', '')
-        if header_name and 'customized header' in header_name.lower():
-            services = header_data.get('services', [])
-            if services and len(services) > 0:
-                return True
-    return False
 
 def role_required(*roles):
     from functools import wraps
@@ -231,15 +245,19 @@ def signup(current_user):
         data = request.get_json()
         if not data.get("username") or not data.get("password"):
             return jsonify({"error": "Username and password required"}), 400
+
         if User.query.filter_by(username=data["username"]).first():
             return jsonify({"error": "Username already exists"}), 400
+
         new_role = data.get("role", "user")
         new_threshold = float(data.get("threshold", 0))
+
         if current_user.role == "manager":
             if new_role in ["admin", "manager"]:
                 return jsonify({"error": "Managers cannot create admin or manager users"}), 403
             if new_threshold > current_user.threshold:
                 return jsonify({"error": f"Threshold cannot exceed your limit of {current_user.threshold}%"}), 403
+
         user = User(
             fname=data.get("fname"),
             lname=data.get("lname"),
@@ -248,8 +266,10 @@ def signup(current_user):
             threshold=new_threshold
         )
         user.set_password(data["password"])
+
         db.session.add(user)
         db.session.commit()
+
         return jsonify({
             "message": "User created successfully",
             "user": {
@@ -258,6 +278,7 @@ def signup(current_user):
                 "threshold": user.threshold
             }
         }), 201
+
     except Exception as e:
         db.session.rollback()
         app.logger.error(f"Signup error: {str(e)}")
@@ -268,11 +289,14 @@ def login():
     try:
         data = request.get_json()
         user = User.query.filter_by(username=data.get("username")).first()
+
         if not user or not user.check_password(data.get("password")):
             return jsonify({"error": "Invalid credentials"}), 401
+
         token = generate_token(user)
         if isinstance(token, bytes):
             token = token.decode("utf-8")
+
         return jsonify({
             "token": token,
             "role": user.role,
@@ -281,6 +305,7 @@ def login():
             "username": user.username,
             "threshold": user.threshold
         })
+
     except Exception as e:
         app.logger.error(f"Login error: {str(e)}")
         return jsonify({"error": "Login failed"}), 500
@@ -310,11 +335,24 @@ def get_quotations():
         return jsonify({'error': 'Failed to fetch quotations'}), 500
 
 @app.route('/api/quotations', methods=['POST'])
-def create_quotation():
+@token_required  # Add this decorator
+def create_quotation(current_user):  # Add current_user parameter
     try:
         data = request.get_json()
+        
+        # Generate sequential ID
+        next_number = get_next_quotation_number()
+        quotation_id = f"REQ {next_number:04d}"
+        
+        # Process headers with proper subservice handling for all types
+        headers = data.get('headers', [])
+        app.logger.debug(f"Original headers: {headers}")
+        
+        processed_headers = process_headers_with_subservices(headers)
+        app.logger.debug(f"Processed headers: {processed_headers}")
+        
         quotation = Quotation(
-            id=f"QUO-{uuid.uuid4().hex[:8].upper()}",
+            id=quotation_id,
             developer_type=data['developerType'],
             project_region=data['projectRegion'],
             plot_area=float(data['plotArea']),
@@ -326,120 +364,24 @@ def create_quotation():
             payment_schedule=data.get('paymentSchedule', '50%'),
             rera_number=data.get('reraNumber'),
             service_summary=data.get('serviceSummary'),
-            created_by=data.get('createdBy', data['developerName']),
+            # FIXED: Use current logged-in user
+            created_by=f"{current_user.fname} {current_user.lname}".strip() or current_user.username,
             terms_accepted=bool(data.get('termsAccepted', False)),
             applicable_terms=data.get('applicableTerms', []),
-            headers=data.get('headers', [])   # ✅ FIX: store headers with subServices
+            headers=processed_headers
         )
+
         db.session.add(quotation)
         db.session.commit()
+
         return jsonify({'success': True, 'data': quotation.to_dict()}), 201
+
     except Exception as e:
         db.session.rollback()
         app.logger.error(f"Create quotation error: {str(e)}")
+        app.logger.error(f"Traceback: {traceback.format_exc()}")
         return jsonify({'error': 'Failed to create quotation'}), 500
 
-@app.route('/api/quotations/<quotation_id>/download-pdf', methods=['GET'])
-@cross_origin(origins='http://localhost:3000')
-def download_quotation_pdf(quotation_id):
-    try:
-        q = Quotation.query.filter_by(id=quotation_id).first()
-        if not q:
-            return jsonify({'error': 'Quotation not found'}), 404
-        pdf_generator = QuotationPDFGenerator()
-        filename = f"Quotation_{quotation_id}.pdf"
-        pdf_dir = 'temp_pdfs'
-        filepath = os.path.join(pdf_dir, filename)
-        os.makedirs(pdf_dir, exist_ok=True)
-        app.logger.debug(f"Generating PDF at: {filepath}")
-        pdf_generator.generate_pdf(q.to_dict(), filepath)
-        app.logger.debug(f"PDF generated successfully at: {filepath}")
-        cleanup_temp_pdf(filepath, delay=300)
-        response = send_file(
-            filepath,
-            as_attachment=True,
-            download_name=filename,
-            mimetype='application/pdf'
-        )
-        response.headers['Content-Disposition'] = f'attachment; filename={filename}'
-        response.headers['Content-Type'] = 'application/pdf'
-        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-        response.headers['Pragma'] = 'no-cache'
-        response.headers['Expires'] = '0'
-        app.logger.debug(f"PDF sent successfully: {filename}")
-        return response
-    except Exception as e:
-        app.logger.error(f"PDF generation error: {str(e)}")
-        app.logger.error(f"Traceback: {traceback.format_exc()}")
-        return jsonify({'error': f'Failed to generate PDF: {str(e)}'}), 500
-
-@app.route('/api/quotations/<quotation_id>', methods=['PUT'])
-@token_required
-def update_quotation(current_user, quotation_id):
-    try:
-        app.logger.debug(f"Updating quotation {quotation_id}")
-        q = Quotation.query.filter_by(id=quotation_id).first()
-        if not q:
-            return jsonify({'error': 'Not found'}), 404
-        data = request.get_json()
-        if 'headers' in data:
-            headers_data = data['headers']
-            if isinstance(headers_data, list):
-                q.headers = headers_data
-                flag_modified(q, 'headers')
-            else:
-                q.headers = []
-                flag_modified(q, 'headers')
-        if 'serviceSummary' in data:
-            q.service_summary = data['serviceSummary']
-        if 'status' in data:
-            q.status = data['status']
-        if 'termsAccepted' in data:
-            q.terms_accepted = data['termsAccepted']
-        if 'applicableTerms' in data:
-            terms_data = data['applicableTerms']
-            if isinstance(terms_data, list):
-                q.applicable_terms = terms_data
-                flag_modified(q, 'applicable_terms')
-            else:
-                q.applicable_terms = []
-                flag_modified(q, 'applicable_terms')
-        has_package_approval = requires_approval_due_to_packages(q.headers or [])
-        has_customized_header_approval = requires_approval_due_to_customized_header(q.headers or [])
-        effective_discount = (
-            q.discount_percent if q.discount_percent > 0
-            else (q.discount_amount / (q.total_amount + q.discount_amount) * 100
-                  if q.total_amount and q.discount_amount else 0)
-        )
-        needs_approval = (
-            has_package_approval or
-            has_customized_header_approval or
-            (q.custom_terms and len(q.custom_terms) > 0) or
-            effective_discount > current_user.threshold
-        )
-        if needs_approval:
-            q.requires_approval = True
-            q.status = 'pending_approval'
-            q.approved_by = None
-            q.approved_at = None
-        else:
-            q.requires_approval = False
-            q.status = 'draft'
-        db.session.commit()
-        return jsonify({'success': True, 'data': q.to_dict()})
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'error': f'Failed to update quotation: {str(e)}'}), 500
-
-@app.route('/api/quotations/<quotation_id>', methods=['GET'])
-def get_quotation(quotation_id):
-    try:
-        q = Quotation.query.filter_by(id=quotation_id).first()
-        if not q:
-            return jsonify({'error': 'Not found'}), 404
-        return jsonify({'success': True, 'data': q.to_dict()})
-    except Exception as e:
-        return jsonify({'error': 'Failed to fetch quotation'}), 500
 
 @app.route('/api/quotations/calculate-pricing', methods=['POST'])
 def calculate_pricing():
@@ -449,63 +391,18 @@ def calculate_pricing():
         region = data['projectRegion']
         plot_area = float(data['plotArea'])
         headers = data.get('headers', [])
-        if plot_area <= 500:
-            band = "0-500"
-        elif plot_area <= 2000:
-            band = "500-2000"
-        elif plot_area <= 4000:
-            band = "2000-4000"
-        elif plot_area <= 6500:
-            band = "4000-6500"
-        else:
-            band = "6500+"
 
-        breakdown, total, total_services = [], 0.0, 0
+        app.logger.debug(f"Calculate pricing - Headers: {headers}")
 
-        for header_data in headers:
-            header_services, header_total = [], 0.0
-            for service in header_data.get('services', []):
-                s_name = service.get('label', service.get('name'))
-                try:
-                    base = PRICING_DATA[category][region][band][s_name]['amount']
-                except Exception:
-                    base = 50000
-
-                subs = [
-                    {"name": s.get('name', s.get('text', str(s))), "included": True}
-                    for s in service.get('subServices', [])
-                ]
-
-                multiplier = 1.0 + (len(subs) * 0.1)
-                total_amt = base * multiplier
-
-                header_services.append({
-                    "id": service.get("id"),
-                    "name": s_name,
-                    "baseAmount": base,
-                    "totalAmount": round(total_amt, 2),
-                    "subServices": subs
-                })
-
-                header_total += total_amt
-                total_services += 1
-
-            breakdown.append({
-                "header": header_data["header"],
-                "services": header_services,
-                "headerTotal": round(header_total, 2)
-            })
-
-            total += header_total
-
-        return jsonify({
-            "success": True,
-            "breakdown": breakdown,
-            "summary": {"subtotal": round(total, 2), "totalServices": total_services}
-        })
+        # **Use enhanced pricing calculation from services_data.py**
+        result = calculate_enhanced_pricing(category, region, plot_area, headers, PRICING_DATA)
+        
+        app.logger.debug(f"Calculate pricing - Result: {result}")
+        return jsonify(result)
 
     except Exception as e:
         app.logger.error(f"Error calculating pricing: {str(e)}")
+        app.logger.error(f"Traceback: {traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/quotations/<quotation_id>/pricing', methods=['PUT'])
@@ -522,8 +419,10 @@ def update_pricing(current_user, quotation_id):
             q.pricing_breakdown = data['pricingBreakdown'] if isinstance(data['pricingBreakdown'], list) else []
             flag_modified(q, 'pricing_breakdown')
 
-        if 'headers' in data:   # ✅ FIX: ensure headers (with subServices) are updated
-            q.headers = data['headers'] if isinstance(data['headers'], list) else []
+        if 'headers' in data:
+            # **Enhanced header processing for all types**
+            processed_headers = process_headers_with_subservices(data.get('headers', []))
+            q.headers = processed_headers
             flag_modified(q, 'headers')
 
         if 'totalAmount' in data:
@@ -535,6 +434,7 @@ def update_pricing(current_user, quotation_id):
         if 'discountPercent' in data:
             q.discount_percent = float(data['discountPercent'])
 
+        # Check approval requirements
         if q.discount_percent > 0:
             effective_discount = q.discount_percent
         elif q.total_amount and q.discount_amount:
@@ -571,6 +471,130 @@ def update_pricing(current_user, quotation_id):
         app.logger.error(f"Error updating pricing: {str(e)}")
         return jsonify({'error': f'Failed to update pricing: {str(e)}'}), 500
 
+@app.route('/api/quotations/<quotation_id>', methods=['PUT'])
+@token_required
+def update_quotation(current_user, quotation_id):
+    try:
+        app.logger.debug(f"Updating quotation {quotation_id}")
+        q = Quotation.query.filter_by(id=quotation_id).first()
+        if not q:
+            return jsonify({'error': 'Not found'}), 404
+
+        data = request.get_json()
+
+        if 'headers' in data:
+            headers_data = data['headers']
+            if isinstance(headers_data, list):
+                # **Use enhanced processing**
+                processed_headers = process_headers_with_subservices(headers_data)
+                q.headers = processed_headers
+                flag_modified(q, 'headers')
+            else:
+                q.headers = []
+                flag_modified(q, 'headers')
+
+        if 'serviceSummary' in data:
+            q.service_summary = data['serviceSummary']
+
+        if 'status' in data:
+            q.status = data['status']
+
+        if 'termsAccepted' in data:
+            q.terms_accepted = data['termsAccepted']
+
+        if 'applicableTerms' in data:
+            terms_data = data['applicableTerms']
+            if isinstance(terms_data, list):
+                q.applicable_terms = terms_data
+                flag_modified(q, 'applicable_terms')
+            else:
+                q.applicable_terms = []
+                flag_modified(q, 'applicable_terms')
+
+        has_package_approval = requires_approval_due_to_packages(q.headers or [])
+        has_customized_header_approval = requires_approval_due_to_customized_header(q.headers or [])
+
+        effective_discount = (
+            q.discount_percent if q.discount_percent > 0
+            else (q.discount_amount / (q.total_amount + q.discount_amount) * 100
+                  if q.total_amount and q.discount_amount else 0)
+        )
+
+        needs_approval = (
+            has_package_approval or
+            has_customized_header_approval or
+            (q.custom_terms and len(q.custom_terms) > 0) or
+            effective_discount > current_user.threshold
+        )
+
+        if needs_approval:
+            q.requires_approval = True
+            q.status = 'pending_approval'
+            q.approved_by = None
+            q.approved_at = None
+        else:
+            q.requires_approval = False
+            q.status = 'draft'
+
+        db.session.commit()
+        return jsonify({'success': True, 'data': q.to_dict()})
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f'Failed to update quotation: {str(e)}'}), 500
+
+@app.route('/api/quotations/<quotation_id>', methods=['GET'])
+def get_quotation(quotation_id):
+    try:
+        q = Quotation.query.filter_by(id=quotation_id).first()
+        if not q:
+            return jsonify({'error': 'Not found'}), 404
+
+        return jsonify({'success': True, 'data': q.to_dict()})
+    except Exception as e:
+        return jsonify({'error': 'Failed to fetch quotation'}), 500
+
+@app.route('/api/quotations/<quotation_id>/download-pdf', methods=['GET'])
+@cross_origin(origins='*')
+def download_quotation_pdf(quotation_id):
+    try:
+        q = Quotation.query.filter_by(id=quotation_id).first()
+        if not q:
+            return jsonify({'error': 'Quotation not found'}), 404
+
+        pdf_generator = QuotationPDFGenerator()
+        filename = f"Quotation_{quotation_id}.pdf"
+        pdf_dir = 'temp_pdfs'
+        filepath = os.path.join(pdf_dir, filename)
+        os.makedirs(pdf_dir, exist_ok=True)
+
+        app.logger.debug(f"Generating PDF at: {filepath}")
+        pdf_generator.generate_pdf(q.to_dict(), filepath)
+        app.logger.debug(f"PDF generated successfully at: {filepath}")
+
+        cleanup_temp_pdf(filepath, delay=300)
+
+        response = send_file(
+            filepath,
+            as_attachment=True,
+            download_name=filename,
+            mimetype='application/pdf'
+        )
+
+        response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+        response.headers['Content-Type'] = 'application/pdf'
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+
+        app.logger.debug(f"PDF sent successfully: {filename}")
+        return response
+
+    except Exception as e:
+        app.logger.error(f"PDF generation error: {str(e)}")
+        app.logger.error(f"Traceback: {traceback.format_exc()}")
+        return jsonify({'error': f'Failed to generate PDF: {str(e)}'}), 500
+
 @app.route('/api/quotations/<quotation_id>/terms', methods=['PUT'])
 @token_required
 def update_terms(current_user, quotation_id):
@@ -580,6 +604,7 @@ def update_terms(current_user, quotation_id):
             return jsonify({'error': 'Quotation not found'}), 404
 
         data = request.get_json()
+
         terms_accepted = data.get('termsAccepted', False)
         applicable_terms = data.get('applicableTerms', [])
         custom_terms = data.get('customTerms', [])
@@ -685,4 +710,3 @@ with app.app_context():
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=3001)
-
